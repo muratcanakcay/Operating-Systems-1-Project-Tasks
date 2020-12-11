@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
 #include <stdarg.h>
@@ -7,8 +8,17 @@
 #include <string.h>
 #include <time.h>
 #include <pthread.h>
+#include <dirent.h>
+#include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
+
+#define DEBUG 1
+#define DEFAULT_MOLE_DIR_ENV "MOLE_DIR" 
+#define DEFAULT_INDEX_PATH_ENV "MOLE_INDEX_PATH"
+#define DEFAULT_INDEX_PATH "HOME"
+#define DEFAULT_INDEX_FILENAME "/.mole-index"
+#define MAX_PATH 255
 
 #define ERR(source) (perror(source),\
 		     fprintf(stderr,"%s:%d\n",__FILE__,__LINE__),\
@@ -31,7 +41,7 @@ void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
         {
             case 't':
                 *t=atoi(optarg);
-                if(*t < 30 || t > 7200 || ++tcount > 1) usage();
+                if(*t < 30 || *t > 7200 || ++tcount > 1) usage();
                 break;
             case 'd':
                 if(++dcount > 1) usage();
@@ -49,9 +59,14 @@ void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
     
     if (dcount == 0) // assign $MOLE_DIR or error
     {
-        char* env = getenv("MOLE_DIR");        
+        char* env = getenv(DEFAULT_MOLE_DIR_ENV);        
         
-        if (env == NULL) ERR("Program executed without -d argument but environment variable $MOLE_DIR not found.");
+        if (env == NULL) 
+        {
+            printf("Program executed without -d argument but environment variable $MOLE_DIR not found.\n");
+            usage();
+        }
+
         if ( (*pathd = malloc(strlen(env)+1) ) == NULL) ERR("malloc");
         
         strcpy(*pathd, env);
@@ -59,16 +74,16 @@ void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
 
     if (fcount == 0) // assign $MOLE_INDEX_PATH or $HOME/.mole-index
     {
-        char* env = getenv("MOLE_INDEX_PATH");
+        char* env = getenv(DEFAULT_INDEX_PATH_ENV);
         
         if (env == NULL) // $MOLE_INDEX_PATH not set
         {
-            env = getenv("HOME");            
+            env = getenv(DEFAULT_INDEX_PATH);            
             
             if ( (*pathf = malloc(strlen(env)+13) ) == NULL) ERR("malloc");  // should be 13?
             
             strcpy(*pathf, env);
-            strcat(*pathf, "/.mole-index");            
+            strcat(*pathf, DEFAULT_INDEX_FILENAME);            
         }
         else // $MOLE_INDEX_PATH set
         {
@@ -85,6 +100,66 @@ void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
     if (argc>optind) usage();
 }
 
+void read_fsignature(char* fname)
+{
+    unsigned char sign[4];    
+    int state;
+    int fd;
+    printf("Filename: %s, Signature: \n", fname);
+    if((fd=open(fname, O_RDONLY)) < 0) ERR("open");
+    if ((state = read(fd, &sign, 4)) < 0) ERR("read");
+    printf("%x %x %x %x - \n", sign[0], sign[1],sign[2],sign[3]);//[0], sign[1]);
+    if(close(fd)) ERR("fclose");
+
+
+}
+
+
+int index_dir(char* pathd)
+{
+    char cwdir[MAX_PATH];
+    if (getcwd(cwdir, MAX_PATH) == NULL) ERR("getcwd");
+    if (chdir(pathd) == -1) ERR("chdir");    
+    if(DEBUG) printf("Directory changed to %s:\n", pathd);
+
+    DIR* dirp;
+    struct dirent* dp;
+    struct stat filestat;
+    int dirs=0,files=0,links=0, other=0;
+    if (NULL == (dirp = opendir("."))) ERR("opendir");
+
+    do 
+    {
+        errno = 0;
+        if ((dp = readdir(dirp)) != NULL)
+        {
+            if (lstat(dp->d_name,&filestat) != 0) ERR("lstat");
+            
+            
+            
+            if (S_ISDIR(filestat.st_mode)) dirs++;
+            else if (S_ISREG(filestat.st_mode))
+            { 
+                read_fsignature(dp->d_name);
+                files++;
+            }
+            else if (S_ISLNK(filestat.st_mode)) links++;
+            else other++;
+        }        
+    } while (dp != NULL);
+
+    if (errno != 0) ERR("readdir");
+    if (closedir(dirp) != 0) ERR("closedir");
+    printf("Files:%d, Dirs%d, Links: %d, Other: %d\n" \
+                    , files,dirs, links, other);    
+
+
+    if(chdir(cwdir)) ERR("chdir");
+    if(DEBUG) printf("Directory changed back to %s:\n", cwdir);
+
+    return 0;
+}
+
 
 int main(int argc, char** argv) 
 {	
@@ -92,8 +167,10 @@ int main(int argc, char** argv)
     char *pathd = NULL, *pathf = NULL;
     
     readArguments(argc, argv, &pathd, &pathf, &t);
+    
+    if(DEBUG) printf("pathd = \"%s\"\npathf = \"%s\"\nt = %d\n", pathd, pathf, t);
 
-    printf("pathd = \"%s\"\npathf = \"%s\"\nt = %d\n", pathd, pathf, t);   
+    index_dir(pathd);
     
     return EXIT_SUCCESS;
 }
