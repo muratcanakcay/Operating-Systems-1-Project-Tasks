@@ -15,11 +15,14 @@
 #include <signal.h>
 #include <ftw.h>
 
-#define DEBUG 1
+#define DEBUGINDEXING 1
+#define DEBUGWRITETEMPFILE 1
+#define DEBUGREADTEMPFILE 1
+
 #define DEFAULT_MOLE_DIR_ENV "MOLE_DIR" 
 #define DEFAULT_INDEX_PATH_ENV "MOLE_INDEX_PATH"
-#define DEFAULT_INDEX_FILENAME "/.mole-index"
-#define MAX_PATH 255
+#define MAX_PATH 128
+#define MAX_FILE 32
 #define MAXFD 100
 
 #define ERR(source) (perror(source),\
@@ -27,13 +30,14 @@
 		     exit(EXIT_FAILURE))
 
 typedef unsigned int UINT;
+int tempfile; // global file descriptor for temp file
 
-enum ftype {dir, jpeg, png, gzip, zip, other};
+enum ftype {dir, jpeg, png, gzip, zip, other, error};
 
 typedef struct 
 {
-    char* name; // filename
-    char* path; //absolute path
+    char name[MAX_FILE]; // filename
+    char path[MAX_PATH]; //absolute path
     off_t size; // file size in bytes
     uid_t uid;  // owner's uid
     enum ftype type; // file type
@@ -46,9 +50,10 @@ void usage(){
     fprintf(stderr,"\e[4mn\e[0m : is an integer from the range [30,7200]. n denotes a time between subsequent rebuilds of index. This parameter is optional. If it is not present, the periodic re-indexing is disabled\n\n");
     exit(EXIT_FAILURE); 
 }
-void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
+void readArgs(int argc, char** argv, char** pathd, char** pathf, int* t) {
 	int c, dcount = 0, fcount = 0, tcount = 0;
 
+    
     while ((c = getopt(argc, argv, "d:f:t:")) != -1)
         switch (c)
         {
@@ -83,16 +88,16 @@ void readArguments(int argc, char** argv, char** pathd, char** pathf, int* t) {
 
     if (fcount == 0) // assign $MOLE_INDEX_PATH or $HOME/.mole-index
     {
+        
         char* env = getenv(DEFAULT_INDEX_PATH_ENV);
         
-        if (env == NULL) // $MOLE_INDEX_PATH not set
-        {
-            env = getenv("HOME");            
-            *pathd = env;
-        }
-        else // $MOLE_INDEX_PATH set
+        if (env != NULL) // $MOLE_INDEX_PATH set
         {
             *pathf = env;          
+        }
+        else // $MOLE_INDEX_PATH not set
+        {
+            // leave pathf as it is, i.e. "$HOME/.mole_index" assigned in main() 
         }
     }    
 
@@ -109,22 +114,28 @@ char* typeToText(int type) {   // returns type based on enum
     else if(type == 2) return "png";
     else if(type == 3) return "gzip";
     else if(type == 4) return "zip";
-    return "other";
+    else if(type == 5) return "other";
+    return "error";
 }
-
-enum ftype getType(const char* fname) // returns type of file based on signature
-{
+enum ftype getType(const char* fname) { // returns file type based on signature
     unsigned char sig[9];
     enum ftype type = 5;
-    
     int state;
     int fd;
-    if (DEBUG) printf("Filename: %s, Signature: \n", fname);
-    if((fd=open(fname, O_RDONLY)) < 0) ERR("open");
+    
+    if (DEBUGINDEXING) printf("[getType] Reading file: %s\n", fname);
+    
+    if((fd=open(fname, O_RDONLY)) < 0)
+    {
+        // couldn't open file for reading, return "6 = error" as file type and continue
+        if (DEBUGINDEXING) printf("[getType] File %s NOT opened \033[0;35m%s\033[0m\n", fname, typeToText(type));
+        return 6;
+    }
+    
     if ((state = read(fd, sig, 8)) < 0) ERR("read");            
     if(close(fd)) ERR("fclose");
 
-    if (DEBUG) printf("%02x %02x %02x %02x %02x %02x %02x %02x - \n", sig[0], sig[1],sig[2],sig[3], sig[4], sig[5],sig[6],sig[7]);
+    if (DEBUGINDEXING) printf("[getType] Signature: %02x %02x %02x %02x %02x %02x %02x %02x - \n", sig[0], sig[1],sig[2],sig[3], sig[4], sig[5],sig[6],sig[7]);
 
     // how to elegantly store and use these?
     unsigned char jpg[] = { 0xff, 0xd8, 0xff };
@@ -134,89 +145,153 @@ enum ftype getType(const char* fname) // returns type of file based on signature
     unsigned char zip2[] = { 0x50, 0x4b, 0x05, 0x06 };
     unsigned char zip3[] = { 0x50, 0x4b, 0x07, 0x08 };    
     
-    switch (sig[0]) 
-    {
-        case 0xff : // checking for jpg
-            type = 1;
-            for (int i = 1; i < 3; i++) 
-            {
-                if (DEBUG) printf("comparing %x to %x\n", sig[i], jpg[i]);
-                if (sig[i] != jpg[i]) type = 5;                
-            }
-            break;
-        case 0x89 : // checking for png
-            type = 2;
-            for (int i = 1; i < 8; i++) 
-            {
-                if (DEBUG) printf("comparing %x to %x\n", sig[i], png[i]);
-                if (sig[i] != png[i]) type = 5;                
-            }
-            break;
-        case 0x1f : // checking for gzip
-            type = 3;
-            if (DEBUG) printf("comparing %x to %x\n", sig[1], gzip[1]);
-            if (sig[1] != png[1]) type = 5;                
-            break;
-        case 0x50 : // checking for zip
-            type = 4;
-            for (int i = 1; i < 4; i++)
-            {
-                if (DEBUG) printf("comparing %x to %x\n", sig[i], zip[i]);
-                if (sig[i] != zip[i] && sig[i] != zip2[i] && sig[i] != zip3[i]) type = 5;
-            }
-            break;
-    }    
+    // recognize file type
+    if (memcmp(sig, gzip, 2) == 0) type = 3;
+    else if (memcmp(sig, jpg, 3) == 0) type = 1;
+    else if (memcmp(sig, zip, 4) == 0 || memcmp(sig, zip2, 4) == 0 || memcmp(sig, zip3, 4) == 0) type = 4;
+    else if (memcmp(sig, png, 8) == 0) type = 2;
+    else type = 5;
 
-    if (DEBUG) printf("File %s is \033[0;35m%s\033[0m\n", fname, typeToText(type));
+    if (DEBUGINDEXING) printf("[getType] File %s is \033[0;35m%s\033[0m\n", fname, typeToText(type));
 
     return type;
 }
 
-int walk(const char* name,const struct stat* s, int type, struct FTW* f)
+int addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid, enum ftype ftype)
 {
-    // printf("File: %s\n", name); // prints names of files traversed
-    char path[MAX_PATH];
+    int state;
+    finfo fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo)); // probably not necessary?
 
+    if(strlen(fpath) >= MAX_PATH) fprintf(stderr, "WARNING! Size of absolute path %s longer than buffer MAX_PATH (%d). Shortening...\n", fpath, MAX_PATH-1);
+    strncpy(fileinfo.path, fpath, MAX_PATH-1);
+    if(strlen(fname) >= MAX_FILE) fprintf(stderr, "WARNING! Size of file name %s longer than MAX_FILE (%d). Shortening...\n", fname, MAX_FILE-1);
+    strncpy(fileinfo.name, fname, MAX_FILE-1);
+    fileinfo.size = fsize;
+    fileinfo.uid = fuid;
+    fileinfo.type = ftype;
+
+    if (DEBUGWRITETEMPFILE)
+    {
+        printf("[addToTempFile] Writing to file:\n");
+        printf("[addToTempFile] Abs. path: %s\n", fileinfo.path);
+        printf("[addToTempFile] File name: %s\n", fileinfo.name);
+        printf("[addToTempFile] File size: %lu\n", fileinfo.size);
+        printf("[addToTempFile] File uid: %d\n", fileinfo.uid);
+        printf("[addToTempFile] File type: %s\n", typeToText(fileinfo.type));
+    }
+
+    if((state = write(tempfile, &fileinfo, sizeof(finfo))) <= 0) ERR("write"); 
+
+    if (DEBUGWRITETEMPFILE) printf("[addToTempFile] Finished writing %d bytes (should be sizeof(finfo) = %lu bytes)\n\n", state, sizeof(finfo));
+
+    return 0;
+}
+
+int walkTree(const char* name, const struct stat* s, int type, struct FTW* f)
+{
+    if (DEBUGINDEXING) printf("\n");
+    char* path;
+    enum ftype ftype;
+
+    errno = 0;
+    
+    if ((path = realpath(name, NULL)) == NULL) 
+    {        
+        ERR("realpath");
+    }
+
+    if (DEBUGINDEXING) printf("[walkTree] Abs. path length: %lu\n", strlen(path));
+    
     switch (type)
     {
         case FTW_DNR:
         case FTW_D:                         
-	        if(getcwd(path, MAX_PATH)==NULL) ERR("getcwd");
-            printf("Path: %s Directory name: %s\n", path, name + f->base);            
+	        if (DEBUGINDEXING) printf("[walkTree] Abs. path: %s \n[walkTree] Directory name: %s\n", path, name + f->base);
+            if(f->level == 0) // ignore root
+            {
+                if (DEBUGINDEXING) printf("[walkTree] Ignoring \033[0;35mroot\033[0m %s\n", name + f->base);
+                return 0;
+            }
+            ftype = 0;
             break;
-        case FTW_F:             
-	        if(getcwd(path, MAX_PATH)==NULL) ERR("getcwd");
-            printf("Path: %s File name: %s\n", path, name  + f->base);
-            getType(name + f->base);
-            break;        
+        case FTW_F:          
+	        
+            if (DEBUGINDEXING) printf("[walkTree] Abs. path: %s \n[walkTree] File name: %s\n", path, name + f->base);
+            ftype = getType(name);
+            break;
     }
+
+    if (DEBUGINDEXING) printf("[walkTree] Size: %lo \n[walkTree] UID: %d\n", s->st_size, s->st_uid);
+
+    if(ftype < 5) addToTempFile(path, name+f->base, s->st_size, s->st_uid, ftype);
+    
     return 0;
 }
 
-int index_dir(char* pathd)
+void testRead()
 {
-    // (to be implemented) 
-    // OPEN FILE FOR WRITING HERE AND ASSIGN USE GLOBAL FILE DESCRIPTOR
+    if((tempfile=open("./temp",O_RDONLY)) < 0) ERR("open");
+
+    finfo fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo)); // probably not necessary?
+
+    int state;
+    while((state = read(tempfile, &fileinfo, sizeof(finfo))) > 0)
+    {
+        if (DEBUGREADTEMPFILE)
+        {
+            printf("[testRead] Reading from file:\n");
+            printf("[testRead] Abs. path: %s\n", fileinfo.path);
+            printf("[testRead] File name: %s\n", fileinfo.name);
+            printf("[testRead] File size: %lu\n", fileinfo.size);
+            printf("[testRead] File uid: %d\n", fileinfo.uid);
+            printf("[testRead] File type: %s\n", typeToText(fileinfo.type));
+            printf("[testRead] Read %d bytes (should be sizeof(finfo) = %lu bytes)\n\n", state, sizeof(finfo));
+        }
+    }
+    if (state < 0) ERR("read");
+
+    if(close(tempfile)) ERR("close");
+}
+
+int indexDir(char* pathd)
+{
+    // open temp file for writing and assign to global file descriptor
     // nftw() will write to the file at each step
-    
-    
-    
-    if( 0 != nftw(pathd, walk, MAXFD, FTW_PHYS | FTW_CHDIR)) 
+    if((tempfile=open("./temp",O_WRONLY|O_CREAT|O_TRUNC|O_APPEND,0777)) < 0) ERR("open");
+
+    //start tree walk process
+    if( 0 != nftw(pathd, walkTree, MAXFD, FTW_PHYS))
         printf("%s: cannot access\n", pathd);
 
+    // close temp file
+    if(close(tempfile)) ERR("close");
+    
+    // TO BE IMPLEMENTED: atomically rename temp file to actual file (here or in main?)
+
     return 0;
 }
 
-int main(int argc, char** argv) 
+int main(int argc, char** argv)
 {	
     int t;
-    char *pathd = NULL, *pathf = NULL;
+    char *pathd = NULL, *pathf, *home;
     
-    readArguments(argc, argv, &pathd, &pathf, &t);
+    // preassign pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
+    home = getenv("HOME");
+    char* tempbuffer = (char*) malloc( (strlen(home) + strlen("/.mole-index") + 1) * sizeof(char) );
+    strcat(strcat(tempbuffer, home), "/.mole-index");
+    pathf = tempbuffer;
     
-    if(DEBUG) printf("pathd = \"%s\"\npathf = \"%s\"\nt = %d\n", pathd, pathf, t);
+    readArgs(argc, argv, &pathd, &pathf, &t);
+    
+    if(DEBUGINDEXING) printf("pathd = \"%s\"\npathf = \"%s\"\nt = %d\n", pathd, pathf, t);
 
-    index_dir(pathd);
-    
+    indexDir(pathd);
+
+    testRead(); //test reading from temp file
+
+    free(tempbuffer);    
     return EXIT_SUCCESS;
 }
