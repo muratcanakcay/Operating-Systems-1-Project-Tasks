@@ -1,4 +1,7 @@
+#include <asm-generic/errno-base.h>
 #define _XOPEN_SOURCE 500
+#include <sys/stat.h>
+#include <ftw.h>
 #include <fcntl.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -10,11 +13,12 @@
 #include <time.h>
 #include <pthread.h>
 #include <dirent.h>
-#include <sys/stat.h>
 #include <errno.h>
 #include <signal.h>
-#include <ftw.h>
 
+
+#define DEBUGMAIN 1
+#define DEBUGTHREAD 1
 #define DEBUGINDEXING 1
 #define DEBUGWRITEFILE 1
 #define DEBUGREADFILE 1
@@ -35,14 +39,22 @@ int tempfile; // global file descriptor for temp file
 
 enum ftype {dir, jpeg, png, gzip, zip, other, error};
 
-typedef struct 
-{
+typedef struct {
     char name[MAX_FILE]; // filename
     char path[MAX_PATH]; //absolute path
     off_t size; // file size in bytes
     uid_t uid;  // owner's uid
     enum ftype type; // file type
 } finfo;
+typedef struct thread_t {
+    pthread_t tid;
+    char* pathd;
+    char* pathf;
+    unsigned short t;
+    bool indexExists;
+    struct stat* indexBuffer;
+} thread_t;
+
 
 // TO BE DONE: revise displayHelp to be more "helpful"
 void displayHelp(){
@@ -86,23 +98,22 @@ void usage(){
     fprintf(stderr,"\e[4mn\e[0m : is an integer from the range [30,7200]. n denotes a time between subsequent rebuilds of index. This parameter is optional. If it is not present, the periodic re-indexing is disabled\n\n");
     exit(EXIT_FAILURE); 
 }
-void readArgs(int argc, char** argv, char** pathd, char** pathf, int* t) {
+void readArgs(int argc, char** argv, char** pathd, char** pathf, unsigned short* t) {
 	int c, dcount = 0, fcount = 0, tcount = 0;
 
-    
     while ((c = getopt(argc, argv, "d:f:t:")) != -1)
         switch (c)
         {
             case 't':
-                *t=atoi(optarg);
-                if(*t < 30 || *t > 7200 || ++tcount > 1) usage();
+                *t = (unsigned short)atoi(optarg);
+                if (*t < 30 || *t > 7200 || ++tcount > 1) usage();
                 break;
             case 'd':
-                if(++dcount > 1) usage();
+                if (++dcount > 1) usage();
                 *pathd = *(argv + optind - 1);                                 
                 break;
             case 'f':
-                if(++fcount > 1) usage();                
+                if (++fcount > 1) usage();                
                 *pathf = *(argv + optind - 1); 
                 break;
             default:
@@ -123,8 +134,7 @@ void readArgs(int argc, char** argv, char** pathd, char** pathf, int* t) {
     }
 
     if (fcount == 0) // assign $MOLE_INDEX_PATH or $HOME/.mole-index
-    {
-        
+    {        
         char* env = getenv(DEFAULT_INDEX_PATH_ENV);
         
         if (env != NULL) // $MOLE_INDEX_PATH set
@@ -139,18 +149,18 @@ void readArgs(int argc, char** argv, char** pathd, char** pathf, int* t) {
 
     if (tcount == 0) // periodic re-indexing disabled
     {
-        *t = -1;
+        *t = -0;
     }    
 
     if (argc>optind) usage();
 }
 char* typeToText(int type) {   // returns type based on enum
-    if(type == 0) return "dir";
-    else if(type == 1) return "jpg";
-    else if(type == 2) return "png";
-    else if(type == 3) return "gzip";
-    else if(type == 4) return "zip";
-    else if(type == 5) return "other";
+    if (type == 0) return "dir";
+    else if (type == 1) return "jpg";
+    else if (type == 2) return "png";
+    else if (type == 3) return "gzip";
+    else if (type == 4) return "zip";
+    else if (type == 5) return "other";
     return "error";
 }
 enum ftype getType(const char* fname) { // returns file type based on signature
@@ -161,15 +171,15 @@ enum ftype getType(const char* fname) { // returns file type based on signature
     
     if (DEBUGINDEXING) printf("[getType] Reading file: %s\n", fname);
     
-    if((fd=open(fname, O_RDONLY)) < 0)
+    if ((fd=open(fname, O_RDONLY)) < 0)
     {
         // couldn't open file for reading, return "6 = error" as file type and continue
         if (DEBUGINDEXING) printf("[getType] File %s NOT opened \033[0;35m%s\033[0m\n", fname, typeToText(type));
         return 6;
     }
     
-    if ((state = read(fd, sig, 8)) < 0) ERR("read");            
-    if(close(fd)) ERR("fclose");
+    if ((state = read(fd, sig, 8)) < 0) ERR("read");
+    if (close(fd)) ERR("fclose");
 
     if (DEBUGINDEXING) printf("[getType] Signature: %02x %02x %02x %02x %02x %02x %02x %02x - \n", sig[0], sig[1],sig[2],sig[3], sig[4], sig[5],sig[6],sig[7]);
 
@@ -197,9 +207,9 @@ int addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid,
     finfo fileinfo;
     memset(&fileinfo, 0, sizeof(finfo)); // probably not necessary?
 
-    if(strlen(fpath) >= MAX_PATH) fprintf(stderr, "WARNING! Size of absolute path %s longer than buffer MAX_PATH (%d). Shortening...\n", fpath, MAX_PATH-1);
+    if (strlen(fpath) >= MAX_PATH) fprintf(stderr, "WARNING! Size of absolute path %s longer than buffer MAX_PATH (%d). Shortening...\n", fpath, MAX_PATH-1);
     strncpy(fileinfo.path, fpath, MAX_PATH-1);
-    if(strlen(fname) >= MAX_FILE) fprintf(stderr, "WARNING! Size of file name %s longer than MAX_FILE (%d). Shortening...\n", fname, MAX_FILE-1);
+    if (strlen(fname) >= MAX_FILE) fprintf(stderr, "WARNING! Size of file name %s longer than MAX_FILE (%d). Shortening...\n", fname, MAX_FILE-1);
     strncpy(fileinfo.name, fname, MAX_FILE-1);
     fileinfo.size = fsize;
     fileinfo.uid = fuid;
@@ -215,14 +225,14 @@ int addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid,
         printf("[addToTempFile] File type: %s\n", typeToText(fileinfo.type));
     }
 
-    if((state = write(tempfile, &fileinfo, sizeof(finfo))) <= 0) ERR("write"); 
+    if ((state = write(tempfile, &fileinfo, sizeof(finfo))) <= 0) ERR("write");
 
     if (DEBUGWRITEFILE) printf("[addToTempFile] Finished writing %d bytes (should be sizeof(finfo) = %lu bytes)\n\n", state, sizeof(finfo));
 
     return 0;
 }
 int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
-    if (DEBUGINDEXING) printf("\n");
+    
     char* path;
     enum ftype ftype;
 
@@ -233,22 +243,21 @@ int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
         ERR("realpath");
     }
 
-    if (DEBUGINDEXING) printf("[walkTree] Abs. path length: %lu\n", strlen(path));
+    if (DEBUGINDEXING) printf("\n[walkTree] Abs. path length: %lu\n", strlen(path));
     
     switch (type)
     {
         case FTW_DNR:
-        case FTW_D:                         
+        case FTW_D:
 	        if (DEBUGINDEXING) printf("[walkTree] Abs. path: %s \n[walkTree] Directory name: %s\n", path, name + f->base);
-            if(f->level == 0) // ignore root
+            if (f->level == 0) // ignore root
             {
                 if (DEBUGINDEXING) printf("[walkTree] Ignoring \033[0;35mroot\033[0m %s\n", name + f->base);
                 return 0;
             }
             ftype = 0;
             break;
-        case FTW_F:          
-	        
+        case FTW_F:	        
             if (DEBUGINDEXING) printf("[walkTree] Abs. path: %s \n[walkTree] File name: %s\n", path, name + f->base);
             ftype = getType(name);
             break;
@@ -256,18 +265,18 @@ int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
 
     if (DEBUGINDEXING) printf("[walkTree] Size: %lo \n[walkTree] UID: %d\n", s->st_size, s->st_uid);
 
-    if(ftype < 5) addToTempFile(path, name+f->base, s->st_size, s->st_uid, ftype);
+    if (ftype < 5) addToTempFile(path, name+f->base, s->st_size, s->st_uid, ftype);
     
     return 0;
 }
-void testRead(const char* pathf) {
-    if((tempfile=open(pathf,O_RDONLY)) < 0) ERR("open");
+void testRead(const char* pathf) { // will be completely removed eventually
+    if ((tempfile = open(pathf, O_RDONLY)) < 0) ERR("open");
 
     finfo fileinfo;
     memset(&fileinfo, 0, sizeof(finfo)); // probably not necessary?
 
     int state;
-    while((state = read(tempfile, &fileinfo, sizeof(finfo))) > 0)
+    while ((state = read(tempfile, &fileinfo, sizeof(finfo))) > 0)
     {
         if (DEBUGREADFILE)
         {
@@ -282,19 +291,19 @@ void testRead(const char* pathf) {
     }
     if (state < 0) ERR("read");
 
-    if(close(tempfile)) ERR("close");
+    if (close(tempfile)) ERR("close");
 }
 int indexDir(const char* pathd, const char* pathf) {
     // open temp file for writing and assign to global file descriptor
     // nftw() will write to the file at each step
-    if((tempfile=open("./temp",O_WRONLY|O_CREAT|O_TRUNC|O_APPEND,0777)) < 0) ERR("open");
+    if ((tempfile=open("./temp",O_WRONLY|O_CREAT|O_TRUNC|O_APPEND,0777)) < 0) ERR("open");
 
     //start tree walk process
-    if( 0 != nftw(pathd, walkTree, MAXFD, FTW_PHYS))
+    if ( 0 != nftw(pathd, walkTree, MAXFD, FTW_PHYS))
         printf("%s: cannot access\n", pathd);
 
     // close temp file
-    if(close(tempfile)) ERR("close");
+    if (close(tempfile)) ERR("close");
     
     // atomically rename temp file to actual file
     int state = 0;
@@ -309,7 +318,7 @@ int indexDir(const char* pathd, const char* pathf) {
     return 0;
 }
 int count(const char* pathf) {
-    if((tempfile=open(pathf,O_RDONLY)) < 0) ERR("open");
+    if ((tempfile=open(pathf,O_RDONLY)) < 0) ERR("open");
 
     finfo fileinfo;
     memset(&fileinfo, 0, sizeof(finfo)); // probably not necessary?
@@ -351,17 +360,33 @@ int count(const char* pathf) {
     }
     if (state < 0) ERR("read");
 
-    if(close(tempfile)) ERR("close");
+    if (close(tempfile)) ERR("close");
 
     printf("Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
 
     return 0;
 }
 
+void* threadWork(void* voidArgs)
+{
+    thread_t* threadArgs = voidArgs;
+
+    if (DEBUGTHREAD) printf("[threadWork] Thread with TID: %lu started.\n", (unsigned long)threadArgs->tid);
+    if (DEBUGTHREAD && threadArgs->indexExists) printf("[threadWork] %s status: %d last access: %lo last modify: %lo\n", threadArgs->pathf, threadArgs->indexExists, threadArgs->indexBuffer->st_atime, threadArgs->indexBuffer->st_mtime);
+    if (DEBUGTHREAD && !threadArgs->indexExists) printf("[threadWork] %s status: %d Index file does not exist\n", threadArgs->pathf, threadArgs->indexExists);
+    if (DEBUGTHREAD) printf("[threadWork] Current time: %lo\n", time(NULL));    
+    
+    while(true) sleep(1);
+
+    return NULL;
+}
+
 int main(int argc, char** argv)
 {	
-    int t, indexfile;
+    unsigned short t;
+    int status;
     char *pathd = NULL, *pathf, *home;
+    struct stat indexBuffer;
     
     // preassign pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
     home = getenv("HOME");
@@ -369,14 +394,33 @@ int main(int argc, char** argv)
     strcat(strcat(tempbuffer, home), "/.mole-index");
     pathf = tempbuffer;
     
-    readArgs(argc, argv, &pathd, &pathf, &t); 
+    readArgs(argc, argv, &pathd, &pathf, &t);
     
-    if(DEBUGINDEXING) printf("pathd = \"%s\"\npathf = \"%s\"\nt = %d\n", pathd, pathf, t);
+    if (DEBUGMAIN) printf("[main] pathd = \"%s\"\n[main] pathf = \"%s\"\n[main] t = %d\n", pathd, pathf, t);
 
-    // perhaps use another method to check if indexfile exists since its 
-    // timestamp will be needed to check if new indexing should be started
+    status = lstat(pathf, &indexBuffer); // fstatat gives implicit declaration error
+  
+    if (status == 0 && t == 0) // no indexing necessary at this stage
+    {
+        printf("\nIndex file %s exists.\nPeriodic indexing disabled.\n", pathf);
+    }
+    else if (status == 0 || (status == -1 && errno == ENOENT))// create thread for indexing
+    {
+        struct thread_t threadArgs; 
+        threadArgs.pathd = pathd;
+        threadArgs.pathf = pathf;
+        threadArgs.t = t;
+        threadArgs.indexExists = status + 1;
+        threadArgs.indexBuffer = &indexBuffer;
     
-    if( (indexfile = open(pathf, O_RDONLY)) < 0 ) // index file does not exist
+        if (pthread_create(&threadArgs.tid, NULL, threadWork, &threadArgs)) ERR("pthread_create");
+
+        if (DEBUGMAIN) printf("[main] Thread with TID: %lu started.\n", (unsigned long)threadArgs.tid);    
+    }    
+    
+    /*
+    
+    if ( (indexfile = open(pathf, O_RDONLY)) < 0 ) // index file does not exist
     {
         printf("\nIndex file %s does not exist.\nPlease wait for indexing to finish...\n", pathf);
         
@@ -388,43 +432,45 @@ int main(int argc, char** argv)
         printf("Indexing finished and index file %s created succesfully.\n", pathf);
     }
 
+    */
+
     // at this point index file exists
 
     // TO BE IMPLEMENTED: if periodic indexing is set start thread for that
 
-    // wait for user input until exited
+    sleep(1);
 
+    // wait for user input until exited
     while(true)
     {
         char buf[256] = {'\0'};
-        int num;
 
-        printf("\nEnter command (help for commands list): ");
+        printf("\nEnter command (\"help\" for list of commands): ");
         fflush(stdin);
         fgets(buf, 255, stdin);          
         
-        if(memcmp(buf, "test\n", 5) == 0)
+        if (memcmp(buf, "test\n", 5) == 0)
         {            
             //requires DEBUGREADTEMPFILE 1
             testRead(pathf); //test reading from pathf file
         }
-        else if(memcmp(buf, "exit\n", 5) == 0)
+        else if (memcmp(buf, "exit\n", 5) == 0)
         {
             break; // TO BE IMPLEMENTED: TERMINATION PROCEDURE
         }
-        else if(memcmp(buf, "exit!\n", 6) == 0)
+        else if (memcmp(buf, "exit!\n", 6) == 0)
         {
             break; // TO BE IMPLEMENTED: QUICK TERMINATION
         }        
-        else if(memcmp(buf, "index\n", 6) == 0)
+        else if (memcmp(buf, "index\n", 6) == 0)
         {
             indexDir(pathd, pathf); // TO BE IMPLEMENTED: THREAD! and warning if already indexing
         }
-        else if(memcmp(buf, "count\n", 6) == 0)
+        else if (memcmp(buf, "count\n", 6) == 0)
         {
             count(pathf);             
         }
-        else if(memcmp(buf, "help\n", 5) == 0)
+        else if (memcmp(buf, "help\n", 5) == 0)
         {
             displayHelp();            
         }
