@@ -52,8 +52,9 @@ typedef struct thread_t {
     char* pathf;
     unsigned short t;
     bool newIndex;
-    struct stat* indexStat;
-    sigset_t* mask; 
+    struct stat* pIndexStat;
+    sigset_t* pMask;
+    pthread_mutex_t* pmxIndexer;
 } thread_t;
 
 // TO BE DONE: revise displayHelp to be more "helpful"
@@ -377,8 +378,8 @@ int count(const char* pathf) {
 
 void* threadWork(void* voidArgs){
     thread_t* threadArgs = voidArgs;
-    unsigned short timeElapsed = time(NULL) - threadArgs->indexStat->st_mtime;
-    int sigNo;
+    unsigned short timeElapsed = time(NULL) - threadArgs->pIndexStat->st_mtime;
+    //int sigNo;
 
     if (DEBUGTHREAD) // debug messages
     {
@@ -386,15 +387,14 @@ void* threadWork(void* voidArgs){
         if (threadArgs->newIndex) printf("[threadWork] %s status: %d Index file does not exist\n", threadArgs->pathf, threadArgs->newIndex);
         else 
         {
-            printf("[threadWork] %s status: %d last access: %lo last modify: %lo\n", threadArgs->pathf, threadArgs->newIndex, threadArgs->indexStat->st_atime, threadArgs->indexStat->st_mtime);
+            printf("[threadWork] %s status: %d last access: %lo last modify: %lo\n", threadArgs->pathf, threadArgs->newIndex, threadArgs->pIndexStat->st_atime, threadArgs->pIndexStat->st_mtime);
             printf("[threadWork] Current time: %lo\n", time(NULL));
             printf("[threadWork] Time elapsed since last indexing is: %d seconds.\n", timeElapsed);
             printf("[threadWork] Will wait for: %d - %d = %d seconds before re-indexing.\n", threadArgs->t, timeElapsed, threadArgs->t - timeElapsed);
         }
-         
     }
 
-    if(threadArgs->newIndex == 0) // old index file exists - check timestamp
+    if (threadArgs->newIndex == 0) // old index file exists - check how old
     { 
         // if necessary wait until index file is old enough
         if(timeElapsed < threadArgs->t) 
@@ -405,25 +405,37 @@ void* threadWork(void* voidArgs){
         else printf("Index file too old. ");
     }
 
-    // old index file does not exist or exists and old enough to be re-indexed
+    // EITHER 
+    // old index file does not exist (mutex lock not needed for start-up indexing)
+    // OR 
+    // old index file exists and old enough to be re-indexed (mutex lock needed)
     printf("Starting indexing.\n");
+    if (!threadArgs->newIndex) pthread_mutex_lock(threadArgs->pmxIndexer);
     indexDir(threadArgs->pathd, threadArgs->pathf);
+    if (!threadArgs->newIndex) pthread_mutex_unlock(threadArgs->pmxIndexer);
     printf("Indexing finished and index file \"%s\" created succesfully.\n", threadArgs->pathf);
-    pthread_kill(threadArgs->mtid, SIGINT);
+    
+    pthread_kill(threadArgs->mtid, SIGINT); // informing main thread that start-up indexing is finished
 
     while (threadArgs->t) // start periodic indexing in loop
     {
         //TO BE IMPLEMENTED 
         
-        sleep(10);
-        printf("\nStarting periodic indexing.");
-        printf("\nEnter command (\"help\" for list of commands): ");
+        printf("Starting periodic indexing.\n");
+        printf("Enter command (\"help\" for list of commands): \n");
 
+        // simulate 15 second long indexing operation to check
+        // user command "index" will not execute during this period
+        if (DEBUGTHREAD) printf("MUTEX LOCK 15 seconds.\n");
+        pthread_mutex_lock(threadArgs->pmxIndexer);   // will also probably need trylock not to conflict with user command
+        sleep(15); 
+        //indexDir(threadArgs->pathd, threadArgs->pathf);
+        pthread_mutex_unlock(threadArgs->pmxIndexer);
+        if (DEBUGTHREAD) printf("MUTEX UNLOCKED - now user can run \"index\".\n");
 
-        // indexDir(threadArgs->pathd, threadArgs->pathf);
-
-        printf("\nPeriodic indexing completed.");
-        printf("\nEnter command (\"help\" for list of commands): ");
+        printf("Periodic indexing completed.\n");
+        printf("Enter command (\"help\" for list of commands): \n");
+        sleep(15);
 
     }
 
@@ -436,6 +448,7 @@ int main(int argc, char** argv)
     int status, sigNo;
     char *pathd = NULL, *pathf, *home;
     struct stat indexStat;
+    pthread_mutex_t mxIndexer = PTHREAD_MUTEX_INITIALIZER;
     
     // preassign pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
     home = getenv("HOME");
@@ -454,7 +467,8 @@ int main(int argc, char** argv)
     sigemptyset(&mask);
     sigaddset(&mask, SIGUSR1); // "terminate" signal for indexing thread
     sigaddset(&mask, SIGUSR2); // "quick terminate" signal for indexing thread
-    sigaddset(&mask, SIGINT);  // "re-index" signal for indexing thread / indexing finished signal for main thread
+    sigaddset(&mask, SIGINT);  // "re-index" signal for indexing thread 
+                               // "start-up indexing finished" signal for main thread
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
     
     // prepare thread_t struct to pass to the thread
@@ -464,8 +478,9 @@ int main(int argc, char** argv)
     threadArgs.pathf = pathf;
     threadArgs.t = t;
     threadArgs.newIndex = status ? 1 : 0;
-    threadArgs.indexStat = &indexStat;
-    threadArgs.mask = &mask;
+    threadArgs.pIndexStat = &indexStat;
+    threadArgs.pMask = &mask;
+    threadArgs.pmxIndexer = &mxIndexer;
 
     if (status == 0 && t == 0) // no indexing necessary at this stage
     {
@@ -484,21 +499,23 @@ int main(int argc, char** argv)
 
     // if index file does not exist wait for it to be created
     // wait for confirmation from indexing thread via SIGINT
-if (status != 0) // 
+    if (status != 0) // 
     {
         sigwait(&mask, &sigNo);
         while (sigNo != SIGINT);
-        if (DEBUGMAIN) printf("[main] SIGINT received!");
+        if (DEBUGMAIN) printf("[main] SIGINT received!\n");
     }
     
-    // at this point index file exists
+    // at this point index file exists and 
+    // indexing thread is waiting for signals
+    // and carrying out perodic indexing if necessary
     
     // wait for user input until exited
     while(true)
     {
         char buf[256] = {'\0'};
 
-        printf("\nEnter command (\"help\" for list of commands): ");
+        printf("Enter command (\"help\" for list of commands): \n");
         fflush(stdin);
         fgets(buf, 255, stdin);          
         
@@ -517,7 +534,21 @@ if (status != 0) //
         }        
         else if (memcmp(buf, "index\n", 6) == 0)
         {
-            indexDir(pathd, pathf); // TO BE IMPLEMENTED: THREAD! and warning if already indexing
+            int status;
+            // check if there's an indexing operation currently in progress  
+            if ( (status = pthread_mutex_trylock(&mxIndexer) ) == EBUSY)
+            {
+                printf ("There's already an indexing process running...\n");
+                continue;
+            }            
+            else if ( status == 0 ) 
+            {
+                // TO BE IMPLEMENTED 
+                // send SIGINT to indexer thread to re-index
+                printf ("[main] Not implemented yet but will immediately start a new indexing...\n");
+                pthread_mutex_unlock(&mxIndexer);
+            }
+            else ERR("pthread_mutex_lock");
         }
         else if (memcmp(buf, "count\n", 6) == 0)
         {
@@ -528,21 +559,6 @@ if (status != 0) //
             displayHelp();            
         }
     }
-
-
-
-    
-
-
-
-
-
-
-
-    
-    
-
-    
 
     free(tempbuffer);    
     return EXIT_SUCCESS;
