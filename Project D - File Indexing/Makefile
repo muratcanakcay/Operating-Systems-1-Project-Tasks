@@ -8,4 +8,4 @@ main: mole.c
 	
 .PHONY: clean all
 clean:
-	rm mole temp
+	rm mole
