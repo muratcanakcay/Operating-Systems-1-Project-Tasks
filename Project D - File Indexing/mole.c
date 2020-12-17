@@ -15,13 +15,14 @@
 #include <errno.h>
 #include <signal.h>
 
-
 #define DEBUGMAIN 1
-#define DEBUGTHREAD 1
+#define DEBUGTHREAD 0
 #define DEBUGINDEXING 0
 #define DEBUGWRITEFILE 0
 #define DEBUGREADFILE 0
+#define DEBUGQUICKEXIT 1
 #define DEBUGCOUNT 0
+#define DEBUGSIMULATION 1
 
 #define DEFAULT_MOLE_DIR_ENV "MOLE_DIR" 
 #define DEFAULT_INDEX_PATH_ENV "MOLE_INDEX_PATH"
@@ -225,7 +226,12 @@ int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
     
     if ((path = realpath(name, NULL)) == NULL) 
     {        
-        ERR("realpath");
+        if (DEBUGINDEXING) 
+        {
+            printf("name: %s gives error in realpath.\n", name);
+        }
+
+        return 0; // ignore unresolved path
     }
 
     if (DEBUGINDEXING) printf("\n[walkTree] Abs. path length: %lu\n", strlen(path));
@@ -279,11 +285,22 @@ void testRead(const char* pathf) { // will be completely removed eventually
 
     if (close(tempfile)) ERR("close");
 }
+void quickexit(void* tempfile){ // cleanup function for thread during quick exit
+
+    if(DEBUGQUICKEXIT) printf("[quickExit] Starting cleanup.\n[quickExit] Closing tempfile.\n");
+    if (close(*(int*)tempfile)) ERR("close"); // close file descriptor if still open
+    if(DEBUGQUICKEXIT) printf("[quickExit] Deleting tempfile.\n");
+    remove("./temp"); // delete the temp file
+    if(DEBUGQUICKEXIT) printf("[quickExit] Cleanup complete.\n");
+}
 int indexDir(const char* pathd, const char* pathf) {
     // open temp file for writing and assign to global file descriptor
     // nftw() will write to the file at each step
-    if ((tempfile = open("./temp", O_WRONLY|O_CREAT|O_TRUNC|O_APPEND, 0777)) < 0) ERR("open");
-
+    if ((tempfile = open("./.temp", O_WRONLY|O_CREAT|O_TRUNC|O_APPEND, 0777)) < 0) ERR("open");
+    
+    // prepare cleanup for quick exit
+    pthread_cleanup_push(quickexit, &tempfile);
+    
     //start tree walk process
     if ( 0 != nftw(pathd, walkTree, MAXFD, FTW_PHYS))
         printf("%s: cannot access\n", pathd);
@@ -294,22 +311,28 @@ int indexDir(const char* pathd, const char* pathf) {
     // atomically rename temp file to actual file
     // loop while EBUSY so that if indexfile is open in another stream it waits?
     int state = 0;
+    
+    // protect renaming operation against cancellation
+    pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     do
     {
-        state = rename("temp", pathf);
+        state = rename(".temp", pathf);
     } while (state == EBUSY);
     if (state != 0) ERR("rename");
+    pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
+    pthread_cleanup_pop(0);
     return 0;
 }
 int count(const char* pathf) {
-    if ((tempfile = open(pathf, O_RDONLY)) < 0) ERR("open");
+    int indexFile;
+    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
 
     finfo_t fileinfo;
     memset(&fileinfo, 0, sizeof(finfo_t));
 
     int state, dir = 0, jpg = 0, png = 0, gzip = 0, zip = 0;
-    while((state = read(tempfile, &fileinfo, sizeof(finfo_t))) > 0)
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
     {
         if (DEBUGCOUNT)
         {
@@ -345,13 +368,12 @@ int count(const char* pathf) {
     }
     if (state < 0) ERR("read");
 
-    if (close(tempfile)) ERR("close");
+    if (close(indexFile)) ERR("close");
 
     printf("Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
 
     return 0;
 }
-
 void* threadWork(void* voidArgs){
     thread_t* threadArgs = voidArgs;
     unsigned short timeElapsed = time(NULL) - threadArgs->pIndexStat->st_mtime;
@@ -371,9 +393,9 @@ void* threadWork(void* voidArgs){
         }
     }
 
-    if (threadArgs->newIndex == 0) // old index file exists - check how old
+    if (threadArgs->newIndex == 0) // old index file exists 
     { 
-        // if necessary wait until index file is old enough
+        // check the age of the index file and if necessary wait until it's old enough
         if(timeElapsed < threadArgs->t) 
         {
             if(DEBUGTHREAD) printf("[threadWork] Waiting: %d seconds...\n", threadArgs->t - timeElapsed);
@@ -382,6 +404,7 @@ void* threadWork(void* voidArgs){
         else printf("--Index file too old.\n");
     }
 
+    // At this point:
     // EITHER 
     // -- old index file does not exist
     // OR 
@@ -391,32 +414,41 @@ void* threadWork(void* voidArgs){
     if (threadArgs->newIndex == 2) printf("Enter command (\"help\" for list of commands): \n");
     
     pthread_mutex_lock(threadArgs->pmxIndexer);
+    if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCKED.\n");
     indexDir(threadArgs->pathd, threadArgs->pathf);
-    printf("[threadWork] Simulating 5 second long indexing.\n");  // TO BE REMOVED
-    sleep(5); // to simulate a 5 second long indexing procedure  // TO BE REMOVED
+    if (DEBUGSIMULATION) 
+    {
+        printf("[threadWork] Simulating 5 second long indexing.\n");
+        sleep(5); // to simulate a 5 second long indexing procedure
+    }
     pthread_mutex_unlock(threadArgs->pmxIndexer);
+    if (DEBUGTHREAD) printf("[threadWork] MUTEX UNLOCKED - now user can run \"index\".\n");
     
     printf("--Indexing complete.\n");
     if (threadArgs->newIndex != 1 && threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
     
-    if (threadArgs->newIndex == 1) pthread_kill(threadArgs->mtid, SIGUSR1); // informing main thread that start-up indexing is finished
+    // inform main thread that start-up indexing is finished
+    if (threadArgs->newIndex == 1) pthread_kill(threadArgs->mtid, SIGUSR1);
 
-    while (threadArgs->t) // start periodic indexing loop
+    // enter periodic indexing loop if it is set
+    while (threadArgs->t > 0)
     {
         if (DEBUGTHREAD) printf("[threadWork] Setting alarm for %d seconds and waiting for periodic indexing.\n", threadArgs->t);
         
-        alarm(threadArgs->t); // set period duration
+        // set alarm for periodic indexing 
+        alarm(threadArgs->t); 
         
+        // wait for a signal
         do
         {
-            sigwait(threadArgs->pMask, &sigNo);  // cancellation point
-        } while (sigNo != SIGUSR1 && sigNo != SIGUSR2 && sigNo != SIGALRM);        
+            sigwait(threadArgs->pMask, &sigNo);
+        } while (sigNo != SIGUSR1 && sigNo != SIGUSR2 && sigNo != SIGALRM);
         
         if (DEBUGTHREAD) // debug messages
         {
             if (sigNo == SIGUSR1) printf("[threadWork] SIGUSR1 (index) received from user.\n");
             if (sigNo == SIGUSR2) printf("[threadWork] SIGUSR2 (exit) received from user.\n");
-            if (sigNo == SIGALRM) printf("[threadWork] SIGALRM triggered for periodic indexing.\n");
+            if (sigNo == SIGALRM) printf("[threadWork] SIGALRM (periodic indexing) triggered.\n");
         }
 
         if (sigNo == SIGUSR2) break; // end the thread
@@ -424,17 +456,19 @@ void* threadWork(void* voidArgs){
         printf("--Starting indexing.\n");
         printf("Enter command (\"help\" for list of commands): \n");
 
-        if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCK 5 seconds.\n");
         pthread_mutex_lock(threadArgs->pmxIndexer);
-        printf("[threadWork] Simulating 5 second long indexing.\n");  // TO BE REMOVED
-        sleep(5); // to simulate a 5 second long indexing procedure  // TO BE REMOVED
+        if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCKED.\n");
+        if (DEBUGSIMULATION) 
+        {
+            printf("[threadWork] Simulating 5 second long indexing.\n");
+            sleep(5); // to simulate a 5 second long indexing procedure
+        }
         indexDir(threadArgs->pathd, threadArgs->pathf);
         pthread_mutex_unlock(threadArgs->pmxIndexer);
         if (DEBUGTHREAD) printf("[threadWork] MUTEX UNLOCKED - now user can run \"index\".\n");
         
         printf("--Indexing complete.\n");
         if (threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
-
     }
     
     if (DEBUGTHREAD) printf("[threadWork] Ending thread.\n");
@@ -464,10 +498,10 @@ int main(int argc, char** argv)
     // prepare and set the signal mask
     sigset_t mask;
     sigemptyset(&mask);
-    sigaddset(&mask, SIGUSR1); // "terminate" signal for indexing thread
-    sigaddset(&mask, SIGUSR2); // "quick terminate" signal for indexing thread
-    sigaddset(&mask, SIGALRM);  // "re-index" signal for indexing thread 
-                               // "start-up indexing finished" signal for main thread
+    sigaddset(&mask, SIGUSR1);  // "user initiated index" signal for indexer thread
+                                // "start-up indexing completed" signal for main thread
+    sigaddset(&mask, SIGUSR2);  // "exit" signal for indexer thread
+    sigaddset(&mask, SIGALRM);  // "periodic index" signal for indexer thread
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
     
     // prepare thread_t struct to pass to the thread
@@ -481,38 +515,42 @@ int main(int argc, char** argv)
     threadArgs.pIndexStat = &indexStat;
     threadArgs.pMask = &mask;
     threadArgs.pmxIndexer = &mxIndexer;
+    threadArgs.quitFlag = 0;
 
     printf("\nStarting **mole**.\n");
 
-    if (indexStatus == 0 && t == 0) // no indexing necessary at this stage
+    if (indexStatus == 0 && t == 0) // no indexing necessary
     {
-        printf("--Index file \"%s\" exists.\nPeriodic indexing disabled.\n", pathf);
+        printf("--Index file \"%s\" exists.\n--Periodic indexing disabled.\n", pathf);
     }
-    else if (indexStatus == 0 || (indexStatus == -1 && errno == ENOENT))// create thread for indexing
+    else if (indexStatus == 0 || (indexStatus == -1 && errno == ENOENT)) // start indexer thread
     {
+        // display informative messages
         if (indexStatus == 0) printf("--Index file %s exists.\n", pathf);
         else printf("--Index file \"%s\" does not exist. \n", pathf);
         if (t == 0) printf("--Periodic indexing disabled.\n");
         else printf("--Periodic indexing enabled. t = %d seconds\n", t);
     
+        // create thread
         if (pthread_create(&threadArgs.tid, NULL, threadWork, &threadArgs)) ERR("pthread_create");
+        
         if (DEBUGMAIN) printf("[main] Thread with TID: %lu started.\n", (unsigned long)threadArgs.tid);    
     }      
 
     // if index file does not exist wait for it to be created
-    // wait for confirmation from indexing thread via SIGUSR1
+    // wait for confirmation from indexer thread via SIGUSR1
     if (indexStatus != 0)
     {
-        while (sigNo != SIGUSR1) sigwait(&mask, &sigNo);
+        while (sigNo != SIGUSR1) sigwait(&mask, &sigNo);        
         if (DEBUGMAIN) printf("[main] SIGUSR1 received from thread!\n");
     }
     
-    // at this point index file exists and 
-    // indexing thread is waiting for signals
-    // and carrying out perodic indexing if necessary
+    // at this point index file exists and if periodic 
+    // indexing is set indexer thread is waiting for signals
+    // and carrying out perodic indexing as required
     
-    fflush(stdin);
     sleep(1); // allow time for all messages to be displayed
+    
     // wait for user input until exited
     while(true)
     {
@@ -522,23 +560,27 @@ int main(int argc, char** argv)
         fflush(stdin);
         fgets(buf, 255, stdin);          
         
-        if (memcmp(buf, "test\n", 5) == 0)
-        {            
-            //requires DEBUGREADTEMPFILE 1
-            testRead(pathf); //test reading from pathf file
+        if (memcmp(buf, "test\n", 5) == 0) //requires DEBUGREADFILE 1 to display
+        {
+            testRead(pathf); //test reading from index file
         }
         else if (memcmp(buf, "exit\n", 5) == 0)
         {
             threadArgs.quitFlag = 1;
-            if (t > 0)
+            if (threadArgs.tid > 0) // if there's an active thread send signal for termination
             {
+                printf("--Waiting for indexing to finish.\n");
                 pthread_kill(threadArgs.tid, SIGUSR2);
             }
             break; 
         }
         else if (memcmp(buf, "exit!\n", 6) == 0)
         {
-            break; // TO BE IMPLEMENTED: QUICK TERMINATION
+            if (threadArgs.tid > 0) // if there's an active thread cancel it (and trigger cleanup)
+            {
+                pthread_cancel(threadArgs.tid);
+            }            
+            break;
         }        
         else if (memcmp(buf, "index\n", 6) == 0)
         {
@@ -580,13 +622,15 @@ int main(int argc, char** argv)
     }
 
     if (threadArgs.tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
-    if (threadArgs.tid && pthread_join(threadArgs.tid, NULL)) ERR("Can't join with indexing thread");
-    else if (threadArgs.tid && DEBUGMAIN) printf("[main] Joined with indexing thread.\n");
-    else if (threadArgs.tid == 0 && DEBUGMAIN) printf("[main] There's no thread to join.\n");
+    
+    // if there's an active thread wait for its termination
+    if (threadArgs.tid && pthread_join(threadArgs.tid, NULL)) ERR("Can't join with indexer thread");
+    else if (threadArgs.tid && DEBUGMAIN) printf("[main] Joined with indexer thread.\n");
+    else if (threadArgs.tid == 0 && DEBUGMAIN) printf("[main] There's no indexer thread to join.\n");
 
     printf("Exiting **mole**.\n");
 
-    //TO BE COMPLETED
+    // TO BE REVIEWED/COMPLETED
     // free all dynamic memory allocations
     free(tempbuffer);    
     return EXIT_SUCCESS;
