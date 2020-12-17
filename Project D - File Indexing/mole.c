@@ -16,8 +16,8 @@
 #include <signal.h>
 
 
-#define DEBUGMAIN 0
-#define DEBUGTHREAD 0
+#define DEBUGMAIN 1
+#define DEBUGTHREAD 1
 #define DEBUGINDEXING 0
 #define DEBUGWRITEFILE 0
 #define DEBUGREADFILE 0
@@ -52,6 +52,7 @@ typedef struct thread_t {
     char* pathf;
     unsigned short t;
     unsigned short newIndex; //0:old index file exists, 1:does not exist new needed, 2: new indexing initiated by user
+    bool quitFlag;
     struct stat* pIndexStat;
     sigset_t* pMask;
     pthread_mutex_t* pmxIndexer;
@@ -378,7 +379,7 @@ void* threadWork(void* voidArgs){
             if(DEBUGTHREAD) printf("[threadWork] Waiting: %d seconds...\n", threadArgs->t - timeElapsed);
             sleep(threadArgs->t - timeElapsed);
         }
-        else printf("Index file too old. ");
+        else printf("--Index file too old.\n");
     }
 
     // EITHER 
@@ -391,11 +392,12 @@ void* threadWork(void* voidArgs){
     
     pthread_mutex_lock(threadArgs->pmxIndexer);
     indexDir(threadArgs->pathd, threadArgs->pathf);
-    sleep(5); // to simulate a 5 second long indexing procedure
+    printf("[threadWork] Simulating 5 second long indexing.\n");  // TO BE REMOVED
+    sleep(5); // to simulate a 5 second long indexing procedure  // TO BE REMOVED
     pthread_mutex_unlock(threadArgs->pmxIndexer);
     
     printf("--Indexing complete.\n");
-    if (threadArgs->newIndex == 2) printf("Enter command (\"help\" for list of commands): \n");
+    if (threadArgs->newIndex != 1 && threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
     
     if (threadArgs->newIndex == 1) pthread_kill(threadArgs->mtid, SIGUSR1); // informing main thread that start-up indexing is finished
 
@@ -408,25 +410,34 @@ void* threadWork(void* voidArgs){
         do
         {
             sigwait(threadArgs->pMask, &sigNo);  // cancellation point
-        } while (sigNo != SIGUSR1 && sigNo != SIGALRM);        
+        } while (sigNo != SIGUSR1 && sigNo != SIGUSR2 && sigNo != SIGALRM);        
         
-        if (DEBUGTHREAD && sigNo == SIGUSR1) printf("[threadWork] SIGUSR1 received from user.\n");
-        if (DEBUGTHREAD && sigNo == SIGALRM) printf("[threadWork] SIGALRM triggered for periodic indexing.\n");
-        
+        if (DEBUGTHREAD) // debug messages
+        {
+            if (sigNo == SIGUSR1) printf("[threadWork] SIGUSR1 (index) received from user.\n");
+            if (sigNo == SIGUSR2) printf("[threadWork] SIGUSR2 (exit) received from user.\n");
+            if (sigNo == SIGALRM) printf("[threadWork] SIGALRM triggered for periodic indexing.\n");
+        }
+
+        if (sigNo == SIGUSR2) break; // end the thread
+
         printf("--Starting indexing.\n");
         printf("Enter command (\"help\" for list of commands): \n");
 
-        if (DEBUGTHREAD) printf("MUTEX LOCK 5 seconds.\n");
+        if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCK 5 seconds.\n");
         pthread_mutex_lock(threadArgs->pmxIndexer);
-        sleep(5); // to simulate a 5 second long indexing procedure
+        printf("[threadWork] Simulating 5 second long indexing.\n");  // TO BE REMOVED
+        sleep(5); // to simulate a 5 second long indexing procedure  // TO BE REMOVED
         indexDir(threadArgs->pathd, threadArgs->pathf);
         pthread_mutex_unlock(threadArgs->pmxIndexer);
-        if (DEBUGTHREAD) printf("MUTEX UNLOCKED - now user can run \"index\".\n");
+        if (DEBUGTHREAD) printf("[threadWork] MUTEX UNLOCKED - now user can run \"index\".\n");
         
         printf("--Indexing complete.\n");
-        printf("Enter command (\"help\" for list of commands): \n");
-    }
+        if (threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
 
+    }
+    
+    if (DEBUGTHREAD) printf("[threadWork] Ending thread.\n");
     return NULL;
 }
 
@@ -461,6 +472,7 @@ int main(int argc, char** argv)
     
     // prepare thread_t struct to pass to the thread
     struct thread_t threadArgs;
+    threadArgs.tid = 0;
     threadArgs.mtid = pthread_self();
     threadArgs.pathd = pathd;
     threadArgs.pathf = pathf;
@@ -489,7 +501,7 @@ int main(int argc, char** argv)
 
     // if index file does not exist wait for it to be created
     // wait for confirmation from indexing thread via SIGUSR1
-    if (indexStatus != 0) // 
+    if (indexStatus != 0)
     {
         while (sigNo != SIGUSR1) sigwait(&mask, &sigNo);
         if (DEBUGMAIN) printf("[main] SIGUSR1 received from thread!\n");
@@ -500,6 +512,7 @@ int main(int argc, char** argv)
     // and carrying out perodic indexing if necessary
     
     fflush(stdin);
+    sleep(1); // allow time for all messages to be displayed
     // wait for user input until exited
     while(true)
     {
@@ -516,7 +529,12 @@ int main(int argc, char** argv)
         }
         else if (memcmp(buf, "exit\n", 5) == 0)
         {
-            break; // TO BE IMPLEMENTED: TERMINATION PROCEDURE
+            threadArgs.quitFlag = 1;
+            if (t > 0)
+            {
+                pthread_kill(threadArgs.tid, SIGUSR2);
+            }
+            break; 
         }
         else if (memcmp(buf, "exit!\n", 6) == 0)
         {
@@ -557,10 +575,19 @@ int main(int argc, char** argv)
         }
         else if (memcmp(buf, "help\n", 5) == 0)
         {
-            displayHelp();            
+            displayHelp();
         }
     }
 
+    if (threadArgs.tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
+    if (threadArgs.tid && pthread_join(threadArgs.tid, NULL)) ERR("Can't join with indexing thread");
+    else if (threadArgs.tid && DEBUGMAIN) printf("[main] Joined with indexing thread.\n");
+    else if (threadArgs.tid == 0 && DEBUGMAIN) printf("[main] There's no thread to join.\n");
+
+    printf("Exiting **mole**.\n");
+
+    //TO BE COMPLETED
+    // free all dynamic memory allocations
     free(tempbuffer);    
     return EXIT_SUCCESS;
 }
