@@ -21,7 +21,6 @@
 #define DEBUGWRITEFILE 0
 #define DEBUGREADFILE 0
 #define DEBUGQUICKEXIT 1
-#define DEBUGCOUNT 0
 #define DEBUGSIMULATION 1
 
 #define DEFAULT_MOLE_DIR_ENV "MOLE_DIR" 
@@ -39,14 +38,16 @@ int tempfile; // global file descriptor for temp file
 
 enum ftype {dir, jpeg, png, gzip, zip, other, error};
 
-typedef struct finfo_t {
+typedef struct finfo_t
+{
     char name[MAX_FILE]; // filename
     char path[MAX_PATH]; //absolute path
     off_t size; // file size in bytes
     uid_t uid;  // owner's uid
     enum ftype type; // file type
 } finfo_t;
-typedef struct thread_t {
+typedef struct thread_t
+{
     pthread_t tid;
     pthread_t mtid; // main thread's tid
     char* pathd;
@@ -59,7 +60,8 @@ typedef struct thread_t {
     pthread_mutex_t* pmxIndexer;
 } thread_t;
 
-void displayHelp(){
+void displayHelp()
+{
     printf("\ntest         : Tests reading from indexfile.\n\n");
     printf("exit         : Terminate program – wait for any indexing to finish\n\n");
     printf("exit!        : Terminate program – cancel any indexing in process.\n\n");
@@ -70,14 +72,16 @@ void displayHelp(){
     printf("owner uid    : Print the full path, size and type of all files in index that owner is uid.\n\n");
     printf("help         : prints this help message.\n\n");
 }
-void usage(){
+void usage()
+{
     fprintf(stderr,"\n\e[4mUSAGE\e[0m: mole ([-d \e[4mpathd\e[0m] [-f \e[4mpathf\e[0m] [-t \e[4mn\e[0m])\n\n");
     fprintf(stderr,"\e[4mpathd\e[0m : the path to a directory that will be traversed, if the option is not present a path set in an environment variable $MOLE_DIR is used. If the environment variable is not set the program end with an error.\n\n");
     fprintf(stderr,"\e[4mpathf\e[0m : a path to a file where index is stored. If the option is not present, the value from environment variable $MOLE_INDEX_PATH is used. If the variable is not set, the default value of file `.mole-index` in user's home directory is used\n\n");
     fprintf(stderr,"\e[4mn\e[0m : is an integer from the range [30,7200]. n denotes a time between subsequent rebuilds of index. This parameter is optional. If it is not present, the periodic re-indexing is disabled\n\n");
     exit(EXIT_FAILURE); 
 }
-void readArgs(int argc, char** argv, char** pathd, char** pathf, unsigned short* t) {
+void readArgs(int argc, char** argv, char** pathd, char** pathf, unsigned short* t)
+{
 	int c, dcount = 0, fcount = 0, tcount = 0;
 
     while ((c = getopt(argc, argv, "d:f:t:")) != -1)
@@ -133,7 +137,8 @@ void readArgs(int argc, char** argv, char** pathd, char** pathf, unsigned short*
 
     if (argc>optind) usage();
 }
-char* typeToText(int type) {   // returns type based on enum
+char* typeToText(int type) // returns type based on enum
+{
     if (type == 0) return "dir";
     else if (type == 1) return "jpg";
     else if (type == 2) return "png";
@@ -142,7 +147,8 @@ char* typeToText(int type) {   // returns type based on enum
     else if (type == 5) return "other";
     return "error";
 }
-enum ftype getType(const char* fname) { // returns file type based on signature
+enum ftype getType(const char* fname) // returns file type based on signature
+{
     unsigned char sig[9];
     enum ftype type = 5;
     int state;
@@ -189,7 +195,21 @@ enum ftype getType(const char* fname) { // returns file type based on signature
 
     return type;
 }
-int addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid, enum ftype ftype) {
+bool isSubstring(const char* sub, const char* str) // checks if sub is a substring of str
+{
+
+    int sublength = strlen(sub);
+    int strlength = strlen(str);
+    
+    for (int i = 0; i + sublength <= strlength; i++) 
+    {
+        if ( strncmp(sub, str + i, sublength) == 0) return true;
+    }
+    
+    return false;
+}
+void addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid, enum ftype ftype)
+{
     int state;
     finfo_t fileinfo;
     memset(&fileinfo, 0, sizeof(finfo_t));
@@ -215,10 +235,9 @@ int addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid,
     if ((state = write(tempfile, &fileinfo, sizeof(finfo_t))) <= 0) ERR("write");
 
     if (DEBUGWRITEFILE) printf("[addToTempFile] Finished writing %d bytes (should be sizeof(finfo_t) = %lu bytes)\n\n", state, sizeof(finfo_t));
-
-    return 0;
 }
-int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
+int walkTree(const char* name, const struct stat* s, int type, struct FTW* f)
+{
     
     char* path;
     enum ftype ftype;
@@ -261,7 +280,8 @@ int walkTree(const char* name, const struct stat* s, int type, struct FTW* f) {
     free(path); // [CORRECTION] freeing the buffer returned from realpath
     return 0;
 }
-void testRead(const char* pathf) { // will be completely removed eventually
+void testRead(const char* pathf) // will be completely removed eventually
+{
     if ((tempfile = open(pathf, O_RDONLY)) < 0) ERR("open");
 
     finfo_t fileinfo;
@@ -285,15 +305,16 @@ void testRead(const char* pathf) { // will be completely removed eventually
 
     if (close(tempfile)) ERR("close");
 }
-void quickexit(void* tempfile){ // cleanup function for thread during quick exit
-
+void quickexit(void* tempfile)  // cleanup function for thread during quick exit
+{
     if(DEBUGQUICKEXIT) printf("[quickExit] Starting cleanup.\n[quickExit] Closing tempfile.\n");
     if (close(*(int*)tempfile)) ERR("close"); // close file descriptor if still open
     if(DEBUGQUICKEXIT) printf("[quickExit] Deleting tempfile.\n");
-    remove("./temp"); // delete the temp file
+    remove("./.temp"); // delete the temp file
     if(DEBUGQUICKEXIT) printf("[quickExit] Cleanup complete.\n");
 }
-int indexDir(const char* pathd, const char* pathf) {
+void indexDir(const char* pathd, const char* pathf)
+{
     // open temp file for writing and assign to global file descriptor
     // nftw() will write to the file at each step
     if ((tempfile = open("./.temp", O_WRONLY|O_CREAT|O_TRUNC|O_APPEND, 0777)) < 0) ERR("open");
@@ -322,59 +343,9 @@ int indexDir(const char* pathd, const char* pathf) {
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
 
     pthread_cleanup_pop(0);
-    return 0;
 }
-int count(const char* pathf) {
-    int indexFile;
-    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
-
-    finfo_t fileinfo;
-    memset(&fileinfo, 0, sizeof(finfo_t));
-
-    int state, dir = 0, jpg = 0, png = 0, gzip = 0, zip = 0;
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        if (DEBUGCOUNT)
-        {
-            printf("[count] Reading from file %s:\n", realpath(pathf, NULL));
-            printf("[count] Abs. path: %s\n", fileinfo.path);
-            printf("[count] File name: %s\n", fileinfo.name);
-            printf("[count] File size: %lu\n", fileinfo.size);
-            printf("[count] File uid: %d\n", fileinfo.uid);
-            printf("[count] File type: %s\n", typeToText(fileinfo.type));
-            printf("[count] Read %d bytes (should be sizeof(finfo_t) = %lu bytes)\n\n", state, sizeof(finfo_t));
-        }
-
-        switch (fileinfo.type)
-        {
-            case 0:
-                dir++;
-                break;
-            case 1:
-                jpg++;
-                break;
-            case 2:
-                png++;
-                break;
-            case 3:
-                gzip++;
-                break;
-            case 4:
-                zip++;
-                break;
-            default:
-                break;
-        }
-    }
-    if (state < 0) ERR("read");
-
-    if (close(indexFile)) ERR("close");
-
-    printf("Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
-
-    return 0;
-}
-void* threadWork(void* voidArgs){
+void* threadWork(void* voidArgs)
+{
     thread_t* threadArgs = voidArgs;
     unsigned short timeElapsed = time(NULL) - threadArgs->pIndexStat->st_mtime;
     int sigNo;
@@ -411,7 +382,7 @@ void* threadWork(void* voidArgs){
     // -- old index file exists and it's old enough to be re-indexed
     // Start indexing.
     printf("--Starting indexing.\n");
-    if (threadArgs->newIndex == 2) printf("Enter command (\"help\" for list of commands): \n");
+    if (threadArgs->newIndex == 2) printf("> Enter command (\"help\" for list of commands): \n");
     
     pthread_mutex_lock(threadArgs->pmxIndexer);
     if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCKED.\n");
@@ -425,7 +396,7 @@ void* threadWork(void* voidArgs){
     if (DEBUGTHREAD) printf("[threadWork] MUTEX UNLOCKED - now user can run \"index\".\n");
     
     printf("--Indexing complete.\n");
-    if (threadArgs->newIndex != 1 && threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
+    if (threadArgs->newIndex != 1 && threadArgs->quitFlag == 0) printf("> Enter command (\"help\" for list of commands): \n");
     
     // inform main thread that start-up indexing is finished
     if (threadArgs->newIndex == 1) pthread_kill(threadArgs->mtid, SIGUSR1);
@@ -454,7 +425,7 @@ void* threadWork(void* voidArgs){
         if (sigNo == SIGUSR2) break; // end the thread
 
         printf("--Starting indexing.\n");
-        printf("Enter command (\"help\" for list of commands): \n");
+        printf("> Enter command (\"help\" for list of commands): \n");
 
         pthread_mutex_lock(threadArgs->pmxIndexer);
         if (DEBUGTHREAD) printf("[threadWork] MUTEX LOCKED.\n");
@@ -468,34 +439,374 @@ void* threadWork(void* voidArgs){
         if (DEBUGTHREAD) printf("[threadWork] MUTEX UNLOCKED - now user can run \"index\".\n");
         
         printf("--Indexing complete.\n");
-        if (threadArgs->quitFlag == 0) printf("Enter command (\"help\" for list of commands): \n");
+        if (threadArgs->quitFlag == 0) printf("> Enter command (\"help\" for list of commands): \n");
     }
     
     if (DEBUGTHREAD) printf("[threadWork] Ending thread.\n");
     return NULL;
 }
+void count(const char* pathf)
+{
+    int indexFile, state, dir = 0, jpg = 0, png = 0, gzip = 0, zip = 0;
+    finfo_t fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo_t));
+
+    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
+
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        switch (fileinfo.type)
+        {
+            case 0:
+                dir++;
+                break;
+            case 1:
+                jpg++;
+                break;
+            case 2:
+                png++;
+                break;
+            case 3:
+                gzip++;
+                break;
+            case 4:
+                zip++;
+                break;
+            default:
+                break;
+        }
+    }
+    if (state < 0) ERR("read");
+
+    if (close(indexFile)) ERR("close");
+
+    printf("--Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
+}
+void largerThan(const char* pathf, long size)
+{
+    int indexFile, state, count = 0;
+    char* pager;
+    FILE* stream;
+    finfo_t fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo_t));
+
+    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
+
+    // count how many records there are
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (fileinfo.size > size) count++; // comparing off_t with long - is this a problem?
+    }
+
+    stream = stdout;
+    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
+    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
+    {
+        if ( (stream = popen(pager, "w")) == NULL )
+        {
+            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
+            stream = stdout;
+        }        
+    }
+    
+    // move file descriptor offset to the beginning
+    lseek(indexFile, 0, SEEK_SET);    
+
+    //print to stream
+    fprintf(stream, "--List of files in the index with size larger than %ld\n\n", size);
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (fileinfo.size > size) // comparing off_t with long - is this a problem?
+        {
+            fprintf(stream, "File path: %s\n", fileinfo.path);
+            fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
+            fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
+        }
+    }
+    if (state < 0) ERR("read");
+
+    if (close(indexFile)) ERR("close");
+    if (stream != stdout && pclose(stream) < 0) ERR("pclose");    
+}
+void namePart(char* pathf, char* y)
+{
+    int indexFile, state, count = 0;
+    char* pager;
+    FILE* stream;
+    finfo_t fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo_t));
+
+    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
+
+    // count how many records there are
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (isSubstring(y, fileinfo.name)) count++;
+    }
+
+    stream = stdout;
+    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
+    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
+    {
+        if ( (stream = popen(pager, "w")) == NULL )
+        {
+            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
+            stream = stdout;
+        }        
+    }
+    
+    // move file descriptor offset to the beginning
+    lseek(indexFile, 0, SEEK_SET);    
+
+    //print to stream
+    fprintf(stream, "List of files in the index with name containing \"%s\"\n\n", y);
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (isSubstring(y, fileinfo.name))
+        {
+            fprintf(stream, "File path: %s\n", fileinfo.path);
+            fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
+            fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
+        }
+    }
+    if (state < 0) ERR("read");
+
+    if (close(indexFile)) ERR("close");
+    if (stream != stdout && pclose(stream) < 0) ERR("pclose");        
+}
+void owner(const char* pathf, long uid)
+{
+    int indexFile, state, count = 0;
+    char* pager;
+    FILE* stream;
+    finfo_t fileinfo;
+    memset(&fileinfo, 0, sizeof(finfo_t));
+
+    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
+
+    // count how many records there are
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (fileinfo.uid == uid) count++;
+    }
+
+    stream = stdout;
+    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
+    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
+    {
+        if ( (stream = popen(pager, "w")) == NULL )
+        {
+            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
+            stream = stdout;
+        }        
+    }
+    
+    // move file descriptor offset to the beginning
+    lseek(indexFile, 0, SEEK_SET);    
+
+    //print to stream
+    fprintf(stream, "--List of files in the index with owner uid = %ld\n\n", uid);
+    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    {
+        if (fileinfo.uid == uid)
+        {
+            fprintf(stream, "File path: %s\n", fileinfo.path);
+            fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
+            fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
+        }
+    }
+    if (state < 0) ERR("read");
+
+    if (close(indexFile)) ERR("close");
+    if (stream != stdout && pclose(stream) < 0) ERR("pclose");    
+}
+void startupIndexing(int indexStatus, thread_t* threadArgs)
+{
+    if (indexStatus == 0 && threadArgs->t == 0) // no indexing necessary
+    {
+        printf("--Index file \"%s\" exists.\n--Periodic indexing disabled.\n", threadArgs->pathf);
+    }
+    else if (indexStatus == 0 || (indexStatus == -1 && errno == ENOENT)) // start indexer thread
+    {
+        // display informative messages
+        if (indexStatus == 0) printf("--Index file %s exists.\n", threadArgs->pathf);
+        else printf("--Index file \"%s\" does not exist. \n", threadArgs->pathf);
+        if (threadArgs->t == 0) printf("--Periodic indexing disabled.\n");
+        else printf("--Periodic indexing enabled. t = %d seconds\n", threadArgs->t);
+    
+        // create thread
+        if (pthread_create(&threadArgs->tid, NULL, threadWork, threadArgs)) ERR("pthread_create");
+        
+        if (DEBUGMAIN) printf("[main] Thread with TID: %lu started.\n", (unsigned long)threadArgs->tid);
+    }
+}
+void getUserInput(thread_t* threadArgs)
+{
+    
+    // wait for user input until exited
+    while(true)
+    {
+        char buf[256] = {'\0'};
+
+        printf("> Enter command (\"help\" for list of commands): \n");
+        fflush(stdin);
+        fgets(buf, 255, stdin);          
+        
+        
+        if (memcmp(buf, "test\n", 5) == 0) //requires DEBUGREADFILE 1 to display
+        {
+            testRead(threadArgs->pathf); //test reading from index file
+        }
+        
+        
+        // exit
+        else if (memcmp(buf, "exit\n", 5) == 0)
+        {
+            threadArgs->quitFlag = 1;
+            if (threadArgs->tid > 0) // if there's an active thread send signal for termination
+            {
+                // printf("--Waiting for indexing to finish.\n"); // looks wrong
+                pthread_kill(threadArgs->tid, SIGUSR2);
+            }
+            break; 
+        }
+
+        // exit!
+        else if (memcmp(buf, "exit!\n", 6) == 0)
+        {
+            if (threadArgs->tid > 0) // if there's an active thread cancel it (and trigger cleanup)
+            {
+                pthread_cancel(threadArgs->tid);
+            }            
+            break;
+        }        
+        
+        // index
+        else if (memcmp(buf, "index\n", 6) == 0)
+        {
+            int mxStatus = 0;
+            // check if there's an indexing operation currently in progress  
+            if ( (mxStatus = pthread_mutex_trylock(threadArgs->pmxIndexer) ) == EBUSY)
+            {
+                printf ("--There's already an indexing process running...\n");
+                continue;
+            }            
+            else if ( mxStatus == 0 ) 
+            {
+                if(threadArgs->t == 0)  // perodic indexing disabled - there's no active thread
+                {
+                    // create a thread for indexing
+                    threadArgs->newIndex = 2; 
+                    if (DEBUGMAIN) printf("[main] Creating new thread to start indexing...\n");
+                    if (pthread_create(&threadArgs->tid, NULL, threadWork, threadArgs)) ERR("pthread_create");
+                }
+                else // periodic indexing enabled - there's an active thread
+                {
+                    // send SIGUSR1 to active thread to start indexing
+                    if (DEBUGMAIN) printf("[main] Sending SIGUSR1 to thread to start indexing...\n");
+                    pthread_kill(threadArgs->tid, SIGUSR1);
+                }
+                
+                pthread_mutex_unlock(threadArgs->pmxIndexer);
+            }
+            else ERR("pthread_mutex_lock");
+        }
+
+        // count
+        else if (memcmp(buf, "count\n", 6) == 0)
+        {
+            count(threadArgs->pathf);             
+        }
+
+        // largerthan x
+        else if (memcmp(buf, "largerthan ", 11) == 0)
+        {
+            long x;
+            if ( (x = strtol(buf+11, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
+            else if (x > 0)
+            {
+                largerThan(threadArgs->pathf, x);
+            }
+            else printf("--Invalid command or arguments missing.\n");
+        }
+
+        // namepart y
+        else if (memcmp(buf, "namepart ", 9) == 0)
+        {
+            int length;
+            char y[MAX_FILE];
+            strcpy(y, buf+9);
+            length = strlen(y);
+            y[length-1] = '\0'; // get rid of the \n character
+
+            if (strlen(y) > MAX_FILE-1) 
+            {
+                printf("Name part string exceeds maximum file length of %d characters.\n", MAX_FILE-1);
+            }
+            else if (strlen(y) > 0)
+            {
+                namePart(threadArgs->pathf, y);
+            }
+            else printf("--Invalid command or arguments missing.\n");
+        }
+
+        // owner uid
+        else if (memcmp(buf, "owner ", 6) == 0)
+        {
+            long uid;
+            
+            if ( (uid = strtol(buf+5, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
+            else if (uid > 0)
+            {
+                owner(threadArgs->pathf, uid);
+            }
+            else printf("--Invalid command or arguments missing.\n");
+        }
+
+        // help
+        else if (memcmp(buf, "help\n", 5) == 0)
+        {
+            displayHelp();
+        }
+
+        // invalid
+        else printf("--Invalid command or arguments missing.\n");
+    }
+}
+void exitSequence(thread_t* threadArgs)
+{
+    if (threadArgs->tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
+    
+    // if there's an active thread wait for its termination
+    if (threadArgs->tid && pthread_join(threadArgs->tid, NULL)) ERR("Can't join with indexer thread");
+    else if (threadArgs->tid && DEBUGMAIN) printf("[main] Joined with indexer thread.\n");
+    else if (threadArgs->tid == 0 && DEBUGMAIN) printf("[main] There's no indexer thread to join.\n");
+}
 
 int main(int argc, char** argv)
 {	
+    // INITIALIZATION
+    
+    // initialize variables
     unsigned short t;
     int indexStatus, sigNo;
     char *pathd = NULL, *pathf, *home;
     struct stat indexStat;
     pthread_mutex_t mxIndexer = PTHREAD_MUTEX_INITIALIZER;
     
-    // preassign pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
+    // initialize pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
     home = getenv("HOME");
     char* tempbuffer = (char*) calloc( (strlen(home) + strlen("/.mole-index") + 1), sizeof(char));
     strcat(strcat(tempbuffer, home), "/.mole-index");
     pathf = tempbuffer;
     
+    // initialize command line arguments & check index file status
     readArgs(argc, argv, &pathd, &pathf, &t);
+    indexStatus = lstat(pathf, &indexStat); // fstatat gives implicit declaration error
     
     if (DEBUGMAIN) printf("[main] pathd = \"%s\"\n[main] pathf = \"%s\"\n[main] t = %d\n", pathd, pathf, t);
 
-    indexStatus = lstat(pathf, &indexStat); // fstatat gives implicit declaration error    
-
-    // prepare and set the signal mask
+    // initialize signal mask
     sigset_t mask;
     sigemptyset(&mask);
     sigaddset(&mask, SIGUSR1);  // "user initiated index" signal for indexer thread
@@ -504,7 +815,7 @@ int main(int argc, char** argv)
     sigaddset(&mask, SIGALRM);  // "periodic index" signal for indexer thread
     pthread_sigmask(SIG_BLOCK, &mask, NULL);
     
-    // prepare thread_t struct to pass to the thread
+    // initialize thread_t struct to pass to the thread
     struct thread_t threadArgs;
     threadArgs.tid = 0;
     threadArgs.mtid = pthread_self();
@@ -519,119 +830,30 @@ int main(int argc, char** argv)
 
     printf("\nStarting **mole**.\n");
 
-    if (indexStatus == 0 && t == 0) // no indexing necessary
-    {
-        printf("--Index file \"%s\" exists.\n--Periodic indexing disabled.\n", pathf);
-    }
-    else if (indexStatus == 0 || (indexStatus == -1 && errno == ENOENT)) // start indexer thread
-    {
-        // display informative messages
-        if (indexStatus == 0) printf("--Index file %s exists.\n", pathf);
-        else printf("--Index file \"%s\" does not exist. \n", pathf);
-        if (t == 0) printf("--Periodic indexing disabled.\n");
-        else printf("--Periodic indexing enabled. t = %d seconds\n", t);
+    // STARTUP INDEXING
+    startupIndexing(indexStatus, &threadArgs);
     
-        // create thread
-        if (pthread_create(&threadArgs.tid, NULL, threadWork, &threadArgs)) ERR("pthread_create");
-        
-        if (DEBUGMAIN) printf("[main] Thread with TID: %lu started.\n", (unsigned long)threadArgs.tid);    
-    }      
-
-    // if index file does not exist wait for it to be created
+    // if a prevous index file did not exist, wait for it to be created
     // wait for confirmation from indexer thread via SIGUSR1
     if (indexStatus != 0)
     {
-        while (sigNo != SIGUSR1) sigwait(&mask, &sigNo);        
+        while (sigNo != SIGUSR1) sigwait(threadArgs.pMask, &sigNo);
         if (DEBUGMAIN) printf("[main] SIGUSR1 received from thread!\n");
     }
     
-    // at this point index file exists and if periodic 
+    // at this point index file exists and if periodic
     // indexing is set indexer thread is waiting for signals
     // and carrying out perodic indexing as required
     
+    // USER INPUT
     sleep(1); // allow time for all messages to be displayed
+    getUserInput(&threadArgs); // start accepting user commands
     
-    // wait for user input until exited
-    while(true)
-    {
-        char buf[256] = {'\0'};
+    // EXIT SEQUENCE
+    exitSequence(&threadArgs);
 
-        printf("Enter command (\"help\" for list of commands): \n");
-        fflush(stdin);
-        fgets(buf, 255, stdin);          
-        
-        if (memcmp(buf, "test\n", 5) == 0) //requires DEBUGREADFILE 1 to display
-        {
-            testRead(pathf); //test reading from index file
-        }
-        else if (memcmp(buf, "exit\n", 5) == 0)
-        {
-            threadArgs.quitFlag = 1;
-            if (threadArgs.tid > 0) // if there's an active thread send signal for termination
-            {
-                printf("--Waiting for indexing to finish.\n");
-                pthread_kill(threadArgs.tid, SIGUSR2);
-            }
-            break; 
-        }
-        else if (memcmp(buf, "exit!\n", 6) == 0)
-        {
-            if (threadArgs.tid > 0) // if there's an active thread cancel it (and trigger cleanup)
-            {
-                pthread_cancel(threadArgs.tid);
-            }            
-            break;
-        }        
-        else if (memcmp(buf, "index\n", 6) == 0)
-        {
-            int mxStatus = 0;
-            // check if there's an indexing operation currently in progress  
-            if ( (mxStatus = pthread_mutex_trylock(&mxIndexer) ) == EBUSY)
-            {
-                printf ("--There's already an indexing process running...\n");
-                continue;
-            }            
-            else if ( mxStatus == 0 ) 
-            {
-                if(t == 0)  // perodic indexing disabled - there's no active thread
-                {
-                    // create a thread for indexing
-                    threadArgs.newIndex = 2; 
-                    if (DEBUGMAIN) printf("[main] Creating new thread to start indexing...\n");
-                    if (pthread_create(&threadArgs.tid, NULL, threadWork, &threadArgs)) ERR("pthread_create");
-                }
-                else // periodic indexing enabled - there's an active thread
-                {
-                    // send SIGUSR1 to active thread to start indexing
-                    if (DEBUGMAIN) printf("[main] Sending SIGUSR1 to thread to start indexing...\n");
-                    pthread_kill(threadArgs.tid, SIGUSR1);
-                }
-                
-                pthread_mutex_unlock(&mxIndexer);
-            }
-            else ERR("pthread_mutex_lock");
-        }
-        else if (memcmp(buf, "count\n", 6) == 0)
-        {
-            count(pathf);             
-        }
-        else if (memcmp(buf, "help\n", 5) == 0)
-        {
-            displayHelp();
-        }
-    }
+    printf("Ending **mole**.\n");
 
-    if (threadArgs.tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
-    
-    // if there's an active thread wait for its termination
-    if (threadArgs.tid && pthread_join(threadArgs.tid, NULL)) ERR("Can't join with indexer thread");
-    else if (threadArgs.tid && DEBUGMAIN) printf("[main] Joined with indexer thread.\n");
-    else if (threadArgs.tid == 0 && DEBUGMAIN) printf("[main] There's no indexer thread to join.\n");
-
-    printf("Exiting **mole**.\n");
-
-    // TO BE REVIEWED/COMPLETED
-    // free all dynamic memory allocations
-    free(tempbuffer);    
+    free(tempbuffer);
     return EXIT_SUCCESS;
 }
