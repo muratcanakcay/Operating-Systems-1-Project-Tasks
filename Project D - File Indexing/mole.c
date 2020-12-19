@@ -66,10 +66,11 @@ int walkTree(const char* name, const struct stat* s, int type, struct FTW* f);
 void indexDir(const char* pathd, const char* pathf);
 void* threadWork(void* voidArgs);
 void count(const char* pathf);
-void listAll(const char* pathf);
-void largerThan(const char* pathf, long size);
-void namePart(char* pathf, char* y);
-void owner(const char* pathf, long uid);
+void namepart(const char* pathf, const char* buf);
+void largerthan(const char* pathf, const char* buf);
+void owner(const char* pathf, const char* buf);
+bool tests(finfo_t* fileinfo, void* value, int option);
+void listRecords(const char* pathf, void* value, int option);
 void startupIndexing(int indexStatus, thread_t* threadArgs);
 void getUserInput(thread_t* threadArgs);
 void exitSequence(thread_t* threadArgs);
@@ -529,6 +530,45 @@ void count(const char* pathf)
 
     printf("--Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
 }
+void largerthan(const char* pathf, const char* buf)
+{
+    long x;
+    if ( (x = strtol(buf+11, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
+    else if (x > 0)
+    {
+        listRecords(pathf, (void*)&x, 0);
+    }
+    else printf("--Invalid command or arguments missing.\n");
+}
+void namepart(const char* pathf, const char* buf)
+{
+    int length;
+    char y[MAX_FILE];
+    strcpy(y, buf+9);
+    length = strlen(y);
+    y[length-1] = '\0'; // get rid of the \n character
+
+    if (strlen(y) > MAX_FILE-1) 
+    {
+        printf("Name part string exceeds maximum file length of %d characters.\n", MAX_FILE-1);
+    }
+    else if (strlen(y) > 0)
+    {
+        listRecords(pathf, (void*)&y, 1);
+    }
+    else printf("--Invalid command or arguments missing.\n");
+}
+void owner(const char* pathf, const char* buf)
+{
+    long uid;
+            
+    if ( (uid = strtol(buf+5, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
+    else if (uid > 0)
+    {
+        listRecords(pathf, (void*)&uid, 2);
+    }
+    else printf("--Invalid command or arguments missing.\n");
+}
 bool tests(finfo_t* fileinfo, void* value, int option)
 {
     switch (option)
@@ -588,7 +628,9 @@ void listRecords(const char* pathf, void* value, int option)
     if (state < 0) ERR("read");
 
     if (close(indexFile)) ERR("close");
-    if (stream != stdout && pclose(stream) < 0) ERR("pclose");    
+    if (stream != stdout && pclose(stream) < 0) ERR("pclose");
+
+    if (count == 0) printf("No records match the search criteria.\n");
 }
 void startupIndexing(int indexStatus, thread_t* threadArgs)
 {
@@ -620,36 +662,21 @@ void getUserInput(thread_t* threadArgs)
         printf("> Enter command (\"help\" for list of commands): \n");
         fflush(stdin);
         fgets(buf, 255, stdin);          
-        
-        // listall
-        if (memcmp(buf, "listall\n", 8) == 0)
-        {
-            listRecords(threadArgs->pathf, NULL, -1);            
-        }
-
-        // exit
-        else if (memcmp(buf, "exit\n", 5) == 0)
+    
+    
+        if (memcmp(buf, "exit\n", 5) == 0)
         {
             threadArgs->quitFlag = 1;
-            if (threadArgs->tid > 0) // if there's an active thread send signal for termination
-            {
-                // printf("--Waiting for indexing to finish.\n"); // looks wrong
-                pthread_kill(threadArgs->tid, SIGUSR2);
-            }
+            // if there's an active thread send signal for termination
+            if (threadArgs->tid > 0) pthread_kill(threadArgs->tid, SIGUSR2);
             break;
         }
-
-        // exit!
         else if (memcmp(buf, "exit!\n", 6) == 0)
         {
-            if (threadArgs->tid > 0) // if there's an active thread cancel it (and trigger cleanup)
-            {
-                pthread_cancel(threadArgs->tid);
-            }
+            // if there's an active thread cancel it (and trigger cleanup)
+            if (threadArgs->tid > 0) pthread_cancel(threadArgs->tid);
             break;
         }
-        
-        // index
         else if (memcmp(buf, "index\n", 6) == 0)
         {
             int mxStatus = 0;
@@ -679,65 +706,30 @@ void getUserInput(thread_t* threadArgs)
             }
             else ERR("pthread_mutex_lock");
         }
-
-        // count
         else if (memcmp(buf, "count\n", 6) == 0)
         {
             count(threadArgs->pathf);
         }
-
-        // largerthan x
+        else if (memcmp(buf, "listall\n", 8) == 0)
+        {
+            listRecords(threadArgs->pathf, NULL, -1);            
+        }
         else if (memcmp(buf, "largerthan ", 11) == 0)
         {
-            long x;
-            if ( (x = strtol(buf+11, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
-            else if (x > 0)
-            {
-                listRecords(threadArgs->pathf, (void*)&x, 0);
-            }
-            else printf("--Invalid command or arguments missing.\n");
+            largerthan(threadArgs->pathf, buf);
         }
-
-        // namepart y
         else if (memcmp(buf, "namepart ", 9) == 0)
         {
-            int length;
-            char y[MAX_FILE];
-            strcpy(y, buf+9);
-            length = strlen(y);
-            y[length-1] = '\0'; // get rid of the \n character
-
-            if (strlen(y) > MAX_FILE-1) 
-            {
-                printf("Name part string exceeds maximum file length of %d characters.\n", MAX_FILE-1);
-            }
-            else if (strlen(y) > 0)
-            {
-                listRecords(threadArgs->pathf, (void*)&y, 1);
-            }
-            else printf("--Invalid command or arguments missing.\n");
+            namepart(threadArgs->pathf, buf);
         }
-
-        // owner uid
         else if (memcmp(buf, "owner ", 6) == 0)
         {
-            long uid;
-            
-            if ( (uid = strtol(buf+5, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
-            else if (uid > 0)
-            {
-                listRecords(threadArgs->pathf, (void*)&uid, 2);
-            }
-            else printf("--Invalid command or arguments missing.\n");
+            owner(threadArgs->pathf, buf);
         }
-
-        // help
         else if (memcmp(buf, "help\n", 5) == 0)
         {
             displayHelp();
         }
-
-        // invalid
         else printf("--Invalid command or arguments missing.\n");
     }
 }
