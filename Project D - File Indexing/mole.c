@@ -10,18 +10,12 @@
 #include <pthread.h>
 #include <errno.h>
 #include <signal.h>
-
-// following are not needed?
-//#include <stdarg.h>
-//#include <stddef.h>
-//#include <time.h>
-//#include <dirent.h>
+#include <time.h>
 
 #define DEBUGMAIN 1
 #define DEBUGTHREAD 0
 #define DEBUGINDEXING 0
 #define DEBUGWRITEFILE 0
-#define DEBUGREADFILE 0
 #define DEBUGQUICKEXIT 1
 #define DEBUGSIMULATION 1
 
@@ -33,7 +27,6 @@
 		     fprintf(stderr,"%s:%d\n",__FILE__,__LINE__),\
 		     exit(EXIT_FAILURE))
 
-typedef unsigned int UINT;
 int tempfile; // global file descriptor for temp file
 
 enum ftype {dir, jpeg, png, gzip, zip, other, error};
@@ -162,7 +155,7 @@ void displayHelp()
     printf("index        : Start indexing procedure.\n\n");
     printf("count        : Print the counts of each file type in index.\n\n");
     printf("largerthan x : Print the full path, size and type of all files in index that have size larger than x.\n\n");
-    printf("namepart y   : Print the full path, size and type of all files in index that y in the name.\n\n");
+    printf("namepart y   : Print the full path, size and type of all files in index that have y in the name.\n\n");
     printf("owner uid    : Print the full path, size and type of all files in index that owner is uid.\n\n");
     printf("help         : prints this help message.\n\n");
 }
@@ -291,7 +284,6 @@ enum ftype getType(const char* fname) // returns file type based on signature
 }
 bool isSubstring(const char* sub, const char* str) // checks if sub is a substring of str
 {
-
     int sublength = strlen(sub);
     int strlength = strlen(str);
     
@@ -341,8 +333,7 @@ void addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid
     if (DEBUGWRITEFILE) printf("[addToTempFile] Finished writing %d bytes (should be sizeof(finfo_t) = %lu bytes)\n\n", state, sizeof(finfo_t));
 }
 int walkTree(const char* name, const struct stat* s, int type, struct FTW* f)
-{
-    
+{    
     char* path;
     enum ftype ftype;
     errno = 0;
@@ -386,7 +377,7 @@ void indexDir(const char* pathd, const char* pathf)
     
     // open temp file for writing and assign to global file descriptor
     // nftw() will write to the file at each step
-    if ((tempfile = open("./.temp", O_WRONLY|O_CREAT|O_TRUNC|O_APPEND, 0777)) < 0) ERR("open");
+    if ((tempfile = open("./.temp", O_WRONLY|O_CREAT|O_TRUNC, 0777)) < 0) ERR("open");
     
     // prepare cleanup for quick exit
     pthread_cleanup_push(quickexit, &tempfile);
@@ -405,7 +396,7 @@ void indexDir(const char* pathd, const char* pathf)
     pthread_setcancelstate(PTHREAD_CANCEL_DISABLE, NULL);
     do
     {
-        state = rename(".temp", pathf);
+        if ( (state = rename(".temp", pathf)) == EBUSY) sleep(1);
     } while (state == EBUSY);
     if (state != 0) ERR("rename");
     pthread_setcancelstate(PTHREAD_CANCEL_ENABLE, NULL);
@@ -507,9 +498,9 @@ void count(const char* pathf)
     finfo_t fileinfo;
     memset(&fileinfo, 0, sizeof(finfo_t));
 
-    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
+    if ( (indexFile = open(pathf, O_RDONLY)) < 0 ) ERR("open");
 
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    while( (state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0 )
     {
         switch (fileinfo.type)
         {
@@ -538,65 +529,36 @@ void count(const char* pathf)
 
     printf("--Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
 }
-void listAll(const char* pathf)
+bool tests(finfo_t* fileinfo, void* value, int option)
 {
-    int indexFile, state, count = 0;
-    char* pager;
-    FILE* stream;
-    finfo_t fileinfo;
-    memset(&fileinfo, 0, sizeof(finfo_t));
-
-    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
-
-    // count how many records there are
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
+    switch (option)
     {
-        count++;
-    }
-
-    stream = stdout;
-    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
-    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
-    {
-        if ( (stream = popen(pager, "w")) == NULL )
-        {
-            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
-            stream = stdout;
-        }        
+        case -1: return true;                                       // listall
+        case 0 : return fileinfo->size > *(long*)value;             // largerthan
+        case 1 : return isSubstring((char*)value, fileinfo->name);  // namepart
+        case 2 : return fileinfo->uid == *(int*)value;              // owner
     }
     
-    // move file descriptor offset to the beginning
-    lseek(indexFile, 0, SEEK_SET);    
-
-    //print to stream
-    fprintf(stream, "--List of all files in the index\n\n");
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        fprintf(stream, "Abs. path: %s\n", fileinfo.path);
-        fprintf(stream, "File name: %s\n", fileinfo.name);
-        fprintf(stream, "File size: %lu\n", fileinfo.size);
-        fprintf(stream, "File uid: %d\n", fileinfo.uid);
-        fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
-    }
-    if (state < 0) ERR("read");
-
-    if (close(indexFile)) ERR("close");
-    if (stream != stdout && pclose(stream) < 0) ERR("pclose");
+    ERR("Wrong option number passed to tests from getUserInput ");
 }
-void largerThan(const char* pathf, long size)
+void listRecords(const char* pathf, void* value, int option)
 {
     int indexFile, state, count = 0;
     char* pager;
     FILE* stream;
     finfo_t fileinfo;
     memset(&fileinfo, 0, sizeof(finfo_t));
+    
+    // assign the function ptr
+    bool (*conditionTest)(finfo_t*, void* value, int option) = tests;    
 
     if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
 
-    // count how many records there are
+    // count how many records meet the condition required by specific user command
     while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
     {
-        if (fileinfo.size > size) count++; // comparing off_t with long - is this a problem?
+        if (conditionTest(&fileinfo, value, option)) count++;
+        if (count >= 3) break;
     }
 
     stream = stdout;
@@ -613,103 +575,10 @@ void largerThan(const char* pathf, long size)
     // move file descriptor offset to the beginning
     lseek(indexFile, 0, SEEK_SET);    
 
-    //print to stream
-    fprintf(stream, "--List of files in the index with size larger than %ld bytes\n\n", size);
+    //print to stream    
     while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
     {
-        if (fileinfo.size > size) // comparing off_t with long - is this a problem?
-        {
-            fprintf(stream, "File path: %s\n", fileinfo.path);
-            fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
-            fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
-        }
-    }
-    if (state < 0) ERR("read");
-
-    if (close(indexFile)) ERR("close");
-    if (stream != stdout && pclose(stream) < 0) ERR("pclose");
-}
-void namePart(char* pathf, char* y)
-{
-    int indexFile, state, count = 0;
-    char* pager;
-    FILE* stream;
-    finfo_t fileinfo;
-    memset(&fileinfo, 0, sizeof(finfo_t));
-
-    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
-
-    // count how many records there are
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        if (isSubstring(y, fileinfo.name)) count++;
-    }
-
-    stream = stdout;
-    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
-    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
-    {
-        if ( (stream = popen(pager, "w")) == NULL )
-        {
-            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
-            stream = stdout;
-        }        
-    }
-    
-    // move file descriptor offset to the beginning
-    lseek(indexFile, 0, SEEK_SET);    
-
-    //print to stream
-    fprintf(stream, "List of files in the index with name containing \"%s\"\n\n", y);
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        if (isSubstring(y, fileinfo.name))
-        {
-            fprintf(stream, "File path: %s\n", fileinfo.path);
-            fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
-            fprintf(stream, "File type: %s\n\n", typeToText(fileinfo.type));
-        }
-    }
-    if (state < 0) ERR("read");
-
-    if (close(indexFile)) ERR("close");
-    if (stream != stdout && pclose(stream) < 0) ERR("pclose");        
-}
-void owner(const char* pathf, long uid)
-{
-    int indexFile, state, count = 0;
-    char* pager;
-    FILE* stream;
-    finfo_t fileinfo;
-    memset(&fileinfo, 0, sizeof(finfo_t));
-
-    if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
-
-    // count how many records there are
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        if (fileinfo.uid == uid) count++;
-    }
-
-    stream = stdout;
-    // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
-    if (count >= 3 && (pager = getenv("PAGER")) != NULL )
-    {
-        if ( (stream = popen(pager, "w")) == NULL )
-        {
-            printf("WARNING! The $PAGER variable is invalid. Pagination disabled.\n");
-            stream = stdout;
-        }        
-    }
-    
-    // move file descriptor offset to the beginning
-    lseek(indexFile, 0, SEEK_SET);    
-
-    //print to stream
-    fprintf(stream, "--List of files in the index with owner uid = %ld\n\n", uid);
-    while((state = read(indexFile, &fileinfo, sizeof(finfo_t))) > 0)
-    {
-        if (fileinfo.uid == uid)
+        if (conditionTest(&fileinfo, value, option))
         {
             fprintf(stream, "File path: %s\n", fileinfo.path);
             fprintf(stream, "File size: %lu bytes\n", fileinfo.size);
@@ -742,8 +611,7 @@ void startupIndexing(int indexStatus, thread_t* threadArgs)
     }
 }
 void getUserInput(thread_t* threadArgs)
-{
-    
+{    
     // wait for user input until exited
     while(true)
     {
@@ -754,12 +622,11 @@ void getUserInput(thread_t* threadArgs)
         fgets(buf, 255, stdin);          
         
         // listall
-        if (memcmp(buf, "listall\n", 5) == 0) //requires DEBUGREADFILE 1 to display
+        if (memcmp(buf, "listall\n", 8) == 0)
         {
-            listAll(threadArgs->pathf); // display all records in the index
+            listRecords(threadArgs->pathf, NULL, -1);            
         }
-        
-        
+
         // exit
         else if (memcmp(buf, "exit\n", 5) == 0)
         {
@@ -769,7 +636,7 @@ void getUserInput(thread_t* threadArgs)
                 // printf("--Waiting for indexing to finish.\n"); // looks wrong
                 pthread_kill(threadArgs->tid, SIGUSR2);
             }
-            break; 
+            break;
         }
 
         // exit!
@@ -778,26 +645,26 @@ void getUserInput(thread_t* threadArgs)
             if (threadArgs->tid > 0) // if there's an active thread cancel it (and trigger cleanup)
             {
                 pthread_cancel(threadArgs->tid);
-            }            
+            }
             break;
-        }        
+        }
         
         // index
         else if (memcmp(buf, "index\n", 6) == 0)
         {
             int mxStatus = 0;
-            // check if there's an indexing operation currently in progress  
+            // check if there's an indexing operation currently in progress
             if ( (mxStatus = pthread_mutex_trylock(threadArgs->pmxIndexer) ) == EBUSY)
             {
                 printf ("--There's already an indexing process running...\n");
                 continue;
-            }            
-            else if ( mxStatus == 0 ) 
+            }
+            else if ( mxStatus == 0 )
             {
                 if(threadArgs->t == 0)  // perodic indexing disabled - there's no active thread
                 {
                     // create a thread for indexing
-                    threadArgs->newIndex = 2; 
+                    threadArgs->newIndex = 2;
                     if (DEBUGMAIN) printf("[main] Creating new thread to start indexing...\n");
                     if (pthread_create(&threadArgs->tid, NULL, threadWork, threadArgs)) ERR("pthread_create");
                 }
@@ -816,7 +683,7 @@ void getUserInput(thread_t* threadArgs)
         // count
         else if (memcmp(buf, "count\n", 6) == 0)
         {
-            count(threadArgs->pathf);             
+            count(threadArgs->pathf);
         }
 
         // largerthan x
@@ -826,7 +693,7 @@ void getUserInput(thread_t* threadArgs)
             if ( (x = strtol(buf+11, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
             else if (x > 0)
             {
-                largerThan(threadArgs->pathf, x);
+                listRecords(threadArgs->pathf, (void*)&x, 0);
             }
             else printf("--Invalid command or arguments missing.\n");
         }
@@ -846,7 +713,7 @@ void getUserInput(thread_t* threadArgs)
             }
             else if (strlen(y) > 0)
             {
-                namePart(threadArgs->pathf, y);
+                listRecords(threadArgs->pathf, (void*)&y, 1);
             }
             else printf("--Invalid command or arguments missing.\n");
         }
@@ -859,7 +726,7 @@ void getUserInput(thread_t* threadArgs)
             if ( (uid = strtol(buf+5, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
             else if (uid > 0)
             {
-                owner(threadArgs->pathf, uid);
+                listRecords(threadArgs->pathf, (void*)&uid, 2);
             }
             else printf("--Invalid command or arguments missing.\n");
         }
