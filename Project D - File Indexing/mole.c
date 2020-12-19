@@ -569,7 +569,7 @@ void owner(const char* pathf, const char* buf)
     }
     else printf("--Invalid command or arguments missing.\n");
 }
-bool tests(finfo_t* fileinfo, void* value, int option)
+bool conditionTest(finfo_t* fileinfo, void* value, int option)
 {
     switch (option)
     {
@@ -585,13 +585,10 @@ void listRecords(const char* pathf, void* value, int option)
 {
     int indexFile, state, count = 0;
     char* pager;
-    FILE* stream;
+    FILE* stream = stdout;
     finfo_t fileinfo;
     memset(&fileinfo, 0, sizeof(finfo_t));
     
-    // assign the function ptr
-    bool (*conditionTest)(finfo_t*, void* value, int option) = tests;    
-
     if ((indexFile = open(pathf, O_RDONLY)) < 0) ERR("open");
 
     // count how many records meet the condition required by specific user command
@@ -601,7 +598,6 @@ void listRecords(const char* pathf, void* value, int option)
         if (count >= 3) break;
     }
 
-    stream = stdout;
     // if more than 2 records and $PAGER env. variable is set, change stream to $PAGER
     if (count >= 3 && (pager = getenv("PAGER")) != NULL )
     {
