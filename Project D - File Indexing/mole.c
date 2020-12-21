@@ -19,8 +19,8 @@
 #define DEBUGQUICKEXIT 0
 #define DEBUGSIMULATION 0
 
-#define MAX_PATH 128
-#define MAX_FILE 32
+#define MAX_PATH 1024
+#define MAX_FILE 256
 #define MAXFD 100
 
 #define ERR(source) (perror(source),\
@@ -611,7 +611,10 @@ void listRecords(const char* pathf, void* value, int option)
     if (state < 0) ERR("read");
 
     if (close(indexFile)) ERR("close");
-    if (stream != stdout && pclose(stream) < 0) ERR("pclose");
+    if (stream != stdout && pclose(stream) != 0) 
+    {
+        if (errno != EPIPE) ERR("pclose"); // ignore broken pipe error
+    }
 
     if (count == 0) printf("No records match the query criteria.\n");
 }
@@ -638,11 +641,11 @@ void initialization(thread_t* threadArgs, int argc, char** argv)
     // initialize signal mask
     sigset_t* mask;
     if ( (mask = (sigset_t*) malloc(sizeof(sigset_t))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
-
     sigemptyset(mask);
     sigaddset(mask, SIGUSR1);  // "user initiated index" signal for indexer thread
-                                // "start-up indexing completed" signal for main thread
+                               // "start-up indexing completed" signal for main thread
     sigaddset(mask, SIGUSR2);  // "exit" signal for indexer thread
+    sigaddset(mask, SIGPIPE);  // "exit" signal for indexer thread
     sigaddset(mask, SIGALRM);  // "periodic index" signal for indexer thread
     pthread_sigmask(SIG_BLOCK, mask, NULL);
 
@@ -688,7 +691,7 @@ void startupIndexing(thread_t* threadArgs)
 void getUserInput(thread_t* threadArgs)
 {    
     // wait for user input until exited
-    while(true)
+    while(true) 
     {
         char buf[256] = {'\0'};
 

@@ -2,8 +2,8 @@ CC=gcc
 CFLAGS= -std=gnu99 -Wall
 LDLIBS = -lpthread -lm
 
-all: mole
-main: mole.c
+all: mole 
+mole: mole.c
 	gcc -o mole mole.c -lpthread -lm
 	
 .PHONY: clean all
