@@ -13,7 +13,7 @@
 #include <time.h>
 
 #define DEBUGMAIN 0
-#define DEBUGTHREAD 1
+#define DEBUGTHREAD 0
 #define DEBUGINDEXING 0
 #define DEBUGWRITEFILE 0
 #define DEBUGQUICKEXIT 0
@@ -43,6 +43,7 @@ typedef struct thread_t
 {
     pthread_t tid;
     pthread_t mtid; // main thread's tid
+    char* tempBuffer;
     char* pathd;
     char* pathf;
     int t;
@@ -65,14 +66,14 @@ void addToTempFile(const char* fpath, const char* fname, off_t fsize, uid_t fuid
 int walkTree(const char* name, const struct stat* s, int type, struct FTW* f);
 void indexDir(const char* pathd, const char* pathf);
 void* threadWork(void* voidArgs);
-void startIndexing(thread_t* threadArgs);
-void count(const char* pathf);
-void namepart(const char* pathf, const char* buf);
-void largerthan(const char* pathf, const char* buf);
-void owner(const char* pathf, const char* buf);
+void u_index(thread_t* threadArgs);
+void u_count(const char* pathf);
+void u_namepart(const char* pathf, const char* buf);
+void u_largerthan(const char* pathf, const char* buf);
+void u_owner(const char* pathf, const char* buf);
 bool queryTest(finfo_t* fileinfo, void* value, int option);
 void listRecords(const char* pathf, void* value, int option);
-void initializeArgs(thread_t* threadArgs, int argc, char** argv);
+void initialization(thread_t* threadArgs, int argc, char** argv);
 void startupIndexing(thread_t* threadArgs);
 void getUserInput(thread_t* threadArgs);
 void exitSequence(thread_t* threadArgs);
@@ -83,7 +84,7 @@ int main(int argc, char** argv)
     struct thread_t threadArgs;    
 
     // INITIALIZATION
-    initializeArgs(&threadArgs, argc, argv);    
+    initialization(&threadArgs, argc, argv);    
 
     // STARTUP INDEXING
     startupIndexing(&threadArgs);
@@ -450,7 +451,7 @@ void* threadWork(void* voidArgs)
     if (DEBUGTHREAD) printf("[threadWork] Ending thread.\n");
     return NULL;
 }
-void startIndexing(thread_t* threadArgs)
+void u_index(thread_t* threadArgs)
 {
     int mxStatus = 0;
             // check if there's an indexing operation currently in progress
@@ -479,7 +480,7 @@ void startIndexing(thread_t* threadArgs)
             }
             else ERR("pthread_mutex_lock");
 }
-void count(const char* pathf)
+void u_count(const char* pathf)
 {
     int indexFile, state, dir = 0, jpg = 0, png = 0, gzip = 0, zip = 0;
     finfo_t fileinfo;
@@ -516,7 +517,7 @@ void count(const char* pathf)
 
     printf("--Files count: dir:%d, jpg:%d, png:%d, gzip:%d, zip: %d\n", dir, jpg, png, gzip, zip);
 }
-void largerthan(const char* pathf, const char* buf)
+void u_largerthan(const char* pathf, const char* buf)
 {
     long x;
     if ( (x = strtol(buf+11, NULL, 10)) < 0 ) printf("You must enter a positive integer value for x.\n");
@@ -526,7 +527,7 @@ void largerthan(const char* pathf, const char* buf)
     }
     else printf("--Invalid command or arguments missing.\n");
 }
-void namepart(const char* pathf, const char* buf)
+void u_namepart(const char* pathf, const char* buf)
 {
     int length;
     char y[MAX_FILE];
@@ -544,7 +545,7 @@ void namepart(const char* pathf, const char* buf)
     }
     else printf("--Invalid command or arguments missing.\n");
 }
-void owner(const char* pathf, const char* buf)
+void u_owner(const char* pathf, const char* buf)
 {
     long uid;
             
@@ -614,20 +615,19 @@ void listRecords(const char* pathf, void* value, int option)
 
     if (count == 0) printf("No records match the query criteria.\n");
 }
-void initializeArgs(thread_t* threadArgs, int argc, char** argv)
+void initialization(thread_t* threadArgs, int argc, char** argv)
 {
     int t = 0;
-    char *pathd, *pathf, *home, *tempbuffer; 
+    char *pathd, *pathf, *home; 
     
     // initialize pathf=$HOME/.mole_index (to be modified in readArgs() if necessary)
     if ( (home = getenv("HOME")) == NULL ) ERR("$HOME environment variable is NOT defined!!!");
-    if ( (tempbuffer = (char*) calloc( (strlen(home) + strlen("/.mole-index") + 1), sizeof(char))) == NULL) ERR("calloc");
-    strcat(strcat(tempbuffer, home), "/.mole-index");
-    pathf = tempbuffer;    
+    if ( (threadArgs->tempBuffer = (char*) calloc( (strlen(home) + strlen("/.mole-index") + 1), sizeof(char))) == NULL) ERR("calloc");
+    strcat(strcat(threadArgs->tempBuffer, home), "/.mole-index");
+    pathf = threadArgs->tempBuffer;  // free'd in exit_sequence()
     
     // initialize command line arguments & check index file status
     readArgs(argc, argv, &pathd, &pathf, &t);
-    if (pathf != tempbuffer) free(tempbuffer); // if pathf was changed free the now unused buffer
     
     // check if an old index file exists
     int indexStatus = -1;
@@ -635,7 +635,7 @@ void initializeArgs(thread_t* threadArgs, int argc, char** argv)
     if ( (indexStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
     indexStatus = lstat(pathf, indexStat);
 
-    // initialize signal mask & mutex
+    // initialize signal mask
     sigset_t* mask;
     if ( (mask = (sigset_t*) malloc(sizeof(sigset_t))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
 
@@ -646,8 +646,8 @@ void initializeArgs(thread_t* threadArgs, int argc, char** argv)
     sigaddset(mask, SIGALRM);  // "periodic index" signal for indexer thread
     pthread_sigmask(SIG_BLOCK, mask, NULL);
 
-    // initialize mutex 
-    pthread_mutex_t* mxIndexer;    
+    // initialize mutex
+    pthread_mutex_t* mxIndexer;
     mxIndexer = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t)); // free'd in exit_sequence()
     if (pthread_mutex_init(mxIndexer, NULL)) ERR("Couldn't initialize mutex!");
 
@@ -674,7 +674,7 @@ void startupIndexing(thread_t* threadArgs)
     else if (threadArgs->newIndex == 0 || errno == ENOENT) // create indexer thread
     {
         // display informative messages for user
-        if (threadArgs->newIndex == 0) printf("--Index file %s exists.\n", threadArgs->pathf);
+        if (threadArgs->newIndex == 0) printf("--Index file \"%s\" exists.\n", threadArgs->pathf);
         else printf("--Index file \"%s\" does not exist. \n", threadArgs->pathf);
         if (threadArgs->t == 0) printf("--Periodic indexing disabled.\n");
         else printf("--Periodic indexing enabled. t = %d seconds\n", threadArgs->t);
@@ -712,11 +712,11 @@ void getUserInput(thread_t* threadArgs)
         }
         else if (memcmp(buf, "index\n", 6) == 0)
         {
-            startIndexing(threadArgs);
+            u_index(threadArgs);
         }
         else if (memcmp(buf, "count\n", 6) == 0)
         {
-            count(threadArgs->pathf);
+            u_count(threadArgs->pathf);
         }
         else if (memcmp(buf, "listall\n", 8) == 0)
         {
@@ -724,15 +724,15 @@ void getUserInput(thread_t* threadArgs)
         }
         else if (memcmp(buf, "largerthan ", 11) == 0)
         {
-            largerthan(threadArgs->pathf, buf);
+            u_largerthan(threadArgs->pathf, buf);
         }
         else if (memcmp(buf, "namepart ", 9) == 0)
         {
-            namepart(threadArgs->pathf, buf);
+            u_namepart(threadArgs->pathf, buf);
         }
         else if (memcmp(buf, "owner ", 6) == 0)
         {
-            owner(threadArgs->pathf, buf);
+            u_owner(threadArgs->pathf, buf);
         }
         else if (memcmp(buf, "help\n", 5) == 0)
         {
@@ -746,6 +746,7 @@ void exitSequence(thread_t* threadArgs)
     free(threadArgs->pMask);
     free(threadArgs->pmxIndexer);
     free(threadArgs->pIndexStat);
+    free(threadArgs->tempBuffer);
 
     if (threadArgs->tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
     
