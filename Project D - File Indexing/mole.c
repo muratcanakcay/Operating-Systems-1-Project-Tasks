@@ -12,6 +12,7 @@
 #include <sys/stat.h>
 #include <time.h>
 
+// used to turn the debug messages on/off
 #define DEBUGMAIN 0
 #define DEBUGTHREAD 0
 #define DEBUGINDEXING 0
@@ -33,16 +34,16 @@ enum ftype {dir, jpeg, png, gzip, zip, other, error};
 
 typedef struct finfo_t
 {
-    char name[MAX_FILE]; // filename
-    char path[MAX_PATH]; //absolute path
-    off_t size; // file size in bytes
-    uid_t uid;  // owner's uid
-    enum ftype type; // file type
+    char name[MAX_FILE];    // filename
+    char path[MAX_PATH];    //absolute path
+    off_t size;             // file size in bytes
+    uid_t uid;              // owner's uid
+    enum ftype type;        // file type
 } finfo_t;
 typedef struct thread_t
 {
     pthread_t tid;
-    pthread_t mtid; // main thread's tid
+    pthread_t mtid;         // main thread's tid
     char* tempBuffer;
     char* pathd;
     char* pathf;
@@ -211,8 +212,6 @@ enum ftype getType(const char* fname) // returns file type based on signature
         return 6;
     }
     
-    // [CORRECTION] added checking for reading the 8 bytes
-    // and removed ERR() which stopped program execution. Now it just skips the file. 
     if ((state = read(fd, sig, 8)) < 0 || state < 8)
     {
         // couldn't read from the file, return "6 = error" as file type and continue
@@ -220,11 +219,11 @@ enum ftype getType(const char* fname) // returns file type based on signature
         return 6;
     }    
     
-    if (close(fd)) ERR("fclose"); // these ERR() executions stop the program. Should I do something else?
+    if (close(fd)) ERR("fclose");
 
     if (DEBUGINDEXING) printf("[getType] Signature: %02x %02x %02x %02x %02x %02x %02x %02x - \n", sig[0], sig[1],sig[2],sig[3], sig[4], sig[5],sig[6],sig[7]);
 
-    // how to elegantly store and use these?
+    // signatures
     unsigned char jpg[] = { 0xff, 0xd8, 0xff };
     unsigned char png[] = { 0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a };
     unsigned char gzip[] = { 0x1f, 0x8b };
@@ -381,7 +380,7 @@ void* threadWork(void* voidArgs)
         }
     }
 
-    if (threadArgs->newIndex != 0) // start-up without old index file / user initiated indexing 
+    if (threadArgs->newIndex != 0) // 1:start-up without old index file / 2:user initiated indexing 
     {
         printf("--Starting indexing.\n");
         if (threadArgs->newIndex == 2) printf("> Enter command (\"help\" for list of commands): \n");
@@ -406,7 +405,7 @@ void* threadWork(void* voidArgs)
             if (DEBUGTHREAD) printf("[threadWork] Setting alarm for %ld seconds and waiting for periodic indexing.\n", timeLeft);
             alarm(timeLeft);
         }
-        else // index file too old - trigger indexing in periodic indexing loop
+        else // index file too old - directly trigger indexing in periodic indexing loop
         {
             pthread_kill(threadArgs->tid, SIGALRM); 
             printf("--Index file too old.\n");
@@ -462,14 +461,14 @@ void u_index(thread_t* threadArgs)
             }
             else if ( mxStatus == 0 )
             {
-                if(threadArgs->t == 0)  // perodic indexing disabled - there's no active thread
+                if(threadArgs->t == 0)  // perodic indexing disabled: there's no active thread
                 {
                     // create a thread for indexing
                     threadArgs->newIndex = 2;
                     if (DEBUGMAIN) printf("[main] Creating new thread to start indexing...\n");
                     if (pthread_create(&threadArgs->tid, NULL, threadWork, threadArgs)) ERR("pthread_create");
                 }
-                else // periodic indexing enabled - there's an active thread
+                else // periodic indexing enabled: there's an active thread
                 {
                     // send SIGUSR1 to active thread to start indexing
                     if (DEBUGMAIN) printf("[main] Sending SIGUSR1 to thread to start indexing...\n");
@@ -645,8 +644,8 @@ void initialization(thread_t* threadArgs, int argc, char** argv)
     sigaddset(mask, SIGUSR1);  // "user initiated index" signal for indexer thread
                                // "start-up indexing completed" signal for main thread
     sigaddset(mask, SIGUSR2);  // "exit" signal for indexer thread
-    sigaddset(mask, SIGPIPE);  // to ignore the EPIPE error in pclose()
     sigaddset(mask, SIGALRM);  // "periodic index" signal for indexer thread
+    sigaddset(mask, SIGPIPE);  // to ignore the EPIPE error in pclose()
     pthread_sigmask(SIG_BLOCK, mask, NULL);
 
     // initialize mutex
@@ -670,11 +669,11 @@ void initialization(thread_t* threadArgs, int argc, char** argv)
 }
 void startupIndexing(thread_t* threadArgs)
 {
-    if (threadArgs->newIndex == 0 && threadArgs->t == 0) // no startup indexing necessary
+    if (threadArgs->newIndex == 0 && threadArgs->t == 0) // startup indexing IS NOT necessary
     {
         printf("--Index file \"%s\" exists.\n--Periodic indexing disabled.\n", threadArgs->pathf);
     }
-    else if (threadArgs->newIndex == 0 || errno == ENOENT) // create indexer thread
+    else if (threadArgs->newIndex == 0 || errno == ENOENT) // startup indexing IS necessary: create indexer thread
     {
         // display informative messages for user
         if (threadArgs->newIndex == 0) printf("--Index file \"%s\" exists.\n", threadArgs->pathf);
@@ -698,7 +697,7 @@ void getUserInput(thread_t* threadArgs)
         printf("> Enter command (\"help\" for list of commands): \n");
         fflush(stdin);
         
-        if ( fgets(buf, 255, stdin) == NULL ) ERR("fgets)");
+        if ( fgets(buf, 255, stdin) == NULL ) ERR("fgets");
     
         if (memcmp(buf, "exit\n", 5) == 0)
         {
@@ -751,12 +750,12 @@ void exitSequence(thread_t* threadArgs)
     free(threadArgs->pIndexStat);
     free(threadArgs->tempBuffer);
 
-    if (threadArgs->tid && DEBUGMAIN) printf("[main] Waiting to join with indexing thread.\n");
+    if (DEBUGMAIN && threadArgs->tid) printf("[main] Waiting to join with indexing thread.\n");
     
     // if there was an active thread check for its termination
     if (threadArgs->tid && pthread_join(threadArgs->tid, NULL)) ERR("Can't join with indexer thread");
-    else if (threadArgs->tid && DEBUGMAIN) printf("[main] Joined with indexer thread.\n");
-    else if (threadArgs->tid == 0 && DEBUGMAIN) printf("[main] There's no indexer thread to join.\n");
+    else if (DEBUGMAIN && threadArgs->tid != 0) printf("[main] Joined with indexer thread.\n");
+    else if (DEBUGMAIN && threadArgs->tid == 0) printf("[main] There's no indexer thread to join.\n");
 
     printf("Ending **mole**.\n");
 }
