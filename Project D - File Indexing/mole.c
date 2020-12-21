@@ -645,7 +645,7 @@ void initialization(thread_t* threadArgs, int argc, char** argv)
     sigaddset(mask, SIGUSR1);  // "user initiated index" signal for indexer thread
                                // "start-up indexing completed" signal for main thread
     sigaddset(mask, SIGUSR2);  // "exit" signal for indexer thread
-    sigaddset(mask, SIGPIPE);  // "exit" signal for indexer thread
+    sigaddset(mask, SIGPIPE);  // to ignore the EPIPE error in pclose()
     sigaddset(mask, SIGALRM);  // "periodic index" signal for indexer thread
     pthread_sigmask(SIG_BLOCK, mask, NULL);
 
