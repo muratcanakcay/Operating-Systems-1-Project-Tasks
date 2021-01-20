@@ -1,3 +1,4 @@
+#include <ctype.h>
 #define _XOPEN_SOURCE 500
 #include <ftw.h>
 #include <fcntl.h>
@@ -13,7 +14,7 @@
 #include <time.h>
 
 // used to turn the debug messages on/off
-#define DEBUGMAIN 0
+#define DEBUGMAIN 1
 #define DEBUGARGS 1
 #define DEBUGTHREAD 0
 #define DEBUGINDEXING 0
@@ -25,8 +26,11 @@
 #define MIN_X 10
 #define MAX_Y 100
 #define MIN_Y 10
+#define MIN_SPEED 50
+#define MAX_SPEED 1000
 #define DEFAULT_X 20
 #define DEFAULT_Y 20
+#define MAX_SNAKES 30
 
 
 #define ERR(source) (perror(source),\
@@ -35,86 +39,141 @@
 
 int tempfile; // global file descriptor for temp file
 
+typedef struct snake_t
+{
+    int x;
+    int y; 
+    char c;      
+    int s;         
+} snake_t;
+
 typedef struct gamedata_t
 {
     int x;
     int y; 
     char* pathf;      
     unsigned short saveFile; //0: save file not given, 1: save file given
+    snake_t* snakesData;
+    int snakesNo;
     
     bool exitFlag;
     
 } gamedata_t;
 
-void usage()  // TODO correct help textx
-{
-    fprintf(stderr,"\nUSAGE : tsnake [-x xdim=20] [-y ydim=10] [-f file=$SNAKEFILE] c1:s1 [c2:s2 ...]\n\n");
-    fprintf(stderr,"pathd : the path to a directory that will be traversed, if the option is not present a path set in an environment variable $MOLE_DIR is used. If the environment variable is not set the program end with an error.\n\n");
-    fprintf(stderr,"pathf : a path to a file where index is stored. If the option is not present, the value from environment variable $MOLE_INDEX_PATH is used. If the variable is not set, the default value of file `.mole-index` in user's home directory is used\n\n");
-    fprintf(stderr,"n : is an integer from the range [30,7200]. n denotes a time between subsequent rebuilds of index. This parameter is optional. If it is not present, the periodic re-indexing is disabled\n\n");
-    exit(EXIT_FAILURE); 
-}
 
-void readArgs(int argc, char** argv, gamedata_t* data)
+
+//function declarations
+int readSnakeData(char* snakedata, gamedata_t* gamedata);
+
+
+
+//-----------
+
+void usage(){
+    fprintf(stderr,"\nUSAGE : tsnake [-x xdim=%d] [-y ydim=%d] [-f file=$SNAKEFILE] c1:s1 [c2:s2 ...]\n\n", DEFAULT_X, DEFAULT_Y);
+    fprintf(stderr,"x : x dimension of the map. - Default value is %d\n\n", DEFAULT_X);
+    fprintf(stderr,"y : y dimension of the map. - Default value is %d\n\n", DEFAULT_X);
+    fprintf(stderr,"file : a path to a save file. If the option is not present, the value from environment variable $SNAKEFILE is used. If the variable is not set, it will not be possible to save the game state.\n\n");
+    fprintf(stderr,"c1:s1 : c1 is the first snake's character (must be uppercase and unique for each snake), s1 is the first snake's speed in milliseconds.");
+    fprintf(stderr," (must be between %d and %d) - At least one snake must be declared.\n\n", MIN_SPEED, MAX_SPEED);
+    exit(EXIT_FAILURE);}
+
+void readArgs(int argc, char** argv, gamedata_t* gamedata)
 {
 	int c, xcount = 0, ycount = 0, fcount = 0;
-    data->saveFile = 1;
-
+    gamedata->saveFile = 1;
+    gamedata->x = DEFAULT_X;
+    gamedata->y = DEFAULT_Y;
+    gamedata->snakesNo = 0;
+    snake_t snakesData[MAX_SNAKES];
+    gamedata->snakesData = snakesData;
+    
     while ((c = getopt(argc, argv, "x:y:f:")) != -1)
         switch (c)
         {
             case 'x':
-                data->x = atoi(optarg);
-                if (data->x < MIN_X || data->x > MAX_X || ++xcount > 1) usage();
+                gamedata->x = atoi(optarg);
+                if (gamedata->x < MIN_X || gamedata->x > MAX_X || ++xcount > 1) usage();
                 break;
             case 'y':
-                data->y = atoi(optarg);
-                if (data->y < MIN_Y || data->y > MAX_Y || ++ycount > 1) usage();
+                gamedata->y = atoi(optarg);
+                if (gamedata->y < MIN_Y || gamedata->y > MAX_Y || ++ycount > 1) usage();
                 break;
             case 'f':
                 if (++fcount > 1) usage();                
-                data->pathf = *(argv + optind - 1); 
+                gamedata->pathf = *(argv + optind - 1); 
                 break;
             default:
                 usage();
         }
     
-    if (fcount == 0) // assign $SNAKEFILE if it's set
+    if (fcount == 0) // no save file given, assign $SNAKEFILE if it's set
     {        
         char* env = getenv("SNAKEFILE");
         
         if (env != NULL) // $SNAKEFILE set
         {
-            data->pathf = env;          
+            gamedata->pathf = env;          
         }
-        else // no save file given
+        else // saving not possible
         {
-            data->pathf = NULL;
-            data->saveFile = 0;
+            printf("Warning: Save file not set. The game will not be saved!\n");
+            gamedata->pathf = NULL;
+            gamedata->saveFile = 0;
         }
     }    
 
-    if (xcount == 0) // use default x dimension 
-    {
-        data->x = DEFAULT_X;
-    }
-
-    if (ycount == 0) // use default y dimension
-    {
-        data->y = DEFAULT_Y;
-    }
-
-
-    // process c1:s1 ... 
-
     if(DEBUGARGS)
     {
-        printf("x:%d y:%d saveFile:%s, ", data->x, data->y, data->pathf);
-
+        printf("x:%d y:%d saveFile:%s, ", gamedata->x, gamedata->y, gamedata->pathf);
+        printf("arguments: argc:%d optind:%d\n", argc, optind);
     }
 
+    if (argc<=optind) // at least one snake character and speed (c1:s1) not given
+    {
+        printf("Error: At least one snake must be declared in the form [c1:s1]\n");
+        usage();
+    }
 
-    if (argc>optind) usage();
+    for(int i = optind; i < argc; i++) 
+    {
+        if (DEBUGARGS) printf("\nProcessing snake argument %d : %s\n", i-optind+1, argv[i]);
+        gamedata->snakesNo++;
+        readSnakeData(argv[i], gamedata);
+    }
+}
+
+int readSnakeData(char* datastring, gamedata_t* gamedata)
+{
+    int count = 0;
+    char* p = NULL;
+    snake_t* snakedata = (snake_t*) calloc(1, sizeof(snake_t));
+    
+    if (datastring[strlen(datastring)-1] == ':') usage(); // incorrect format - argument ends with ':'
+    
+    p = strtok(datastring, ":");    
+
+    while ( p != NULL)
+    {
+        if (++count > 2) usage();
+        if (count == 1) 
+        {
+            if (strlen(p) > 1 || !isupper(p[0])) usage();  // check uppercase char            
+            snakedata->c = *p;              
+            if (DEBUGARGS) printf("first argument: %s  in gamedata: %c\n", p, snakedata->c);
+        }
+        if (count == 2) 
+        {
+            if ( (snakedata->s = strtol(p, NULL, 10)) == 0) usage(); // check integer
+            if (snakedata->s < MIN_SPEED || snakedata->s > MAX_SPEED) usage(); // check speed value
+            if (DEBUGARGS) printf("second argument: %s in gamedata: %d\n", p, snakedata->s);
+        }
+        p = strtok(NULL, ":");        
+    }
+
+    gamedata->snakesData[gamedata->snakesNo - 1] = *snakedata;
+
+    return 1;
 }
 
 void initialization(int argc, char** argv, gamedata_t* gamedata)
@@ -165,125 +224,21 @@ void initialization(int argc, char** argv, gamedata_t* gamedata)
 }
 
 
-// void startupIndexing(thread_t* threadArgs)
-// {
-//     if (threadArgs->newIndex == 0 && threadArgs->t == 0) // startup indexing IS NOT necessary
-//     {
-//         printf("--Index file \"%s\" exists.\n--Periodic indexing disabled.\n", threadArgs->pathf);
-//     }
-//     else if (threadArgs->newIndex == 0 || errno == ENOENT) // startup indexing IS necessary: create indexer thread
-//     {
-//         // display informative messages for user
-//         if (threadArgs->newIndex == 0) printf("--Index file \"%s\" exists.\n", threadArgs->pathf);
-//         else printf("--Index file \"%s\" does not exist. \n", threadArgs->pathf);
-//         if (threadArgs->t == 0) printf("--Periodic indexing disabled.\n");
-//         else printf("--Periodic indexing enabled. t = %d seconds\n", threadArgs->t);
-    
-//         // create thread
-//         if (pthread_create(&threadArgs->tid, NULL, threadWork, threadArgs)) ERR("pthread_create");
-        
-//         if (DEBUGMAIN) printf("[main] Thread with TID: %lu started.\n", (unsigned long)threadArgs->tid);
-//     }
-// }
-// void getUserInput(thread_t* threadArgs)
-// {    
-//     // wait for user input until exited
-//     while(true) 
-//     {
-//         char buf[256] = {'\0'};
-
-//         printf("> Enter command (\"help\" for list of commands): \n");
-//         fflush(stdin);
-        
-//         if ( fgets(buf, 255, stdin) == NULL ) ERR("fgets");
-    
-//         if (memcmp(buf, "exit\n", 5) == 0)
-//         {
-//             threadArgs->exitFlag = 1;
-//             // if there's an active thread send signal for termination
-//             if (threadArgs->tid > 0) pthread_kill(threadArgs->tid, SIGUSR2);
-//             break;
-//         }
-//         else if (memcmp(buf, "exit!\n", 6) == 0)
-//         {
-//             // if there's an active thread cancel it (and trigger cleanup)
-//             if (threadArgs->tid > 0) pthread_cancel(threadArgs->tid);
-//             break;
-//         }
-//         else if (memcmp(buf, "index\n", 6) == 0)
-//         {
-//             u_index(threadArgs);
-//         }
-//         else if (memcmp(buf, "count\n", 6) == 0)
-//         {
-//             u_count(threadArgs->pathf);
-//         }
-//         else if (memcmp(buf, "listall\n", 8) == 0)
-//         {
-//             listRecords(threadArgs->pathf, NULL, -1);            
-//         }
-//         else if (memcmp(buf, "largerthan ", 11) == 0)
-//         {
-//             u_largerthan(threadArgs->pathf, buf);
-//         }
-//         else if (memcmp(buf, "namepart ", 9) == 0)
-//         {
-//             u_namepart(threadArgs->pathf, buf);
-//         }
-//         else if (memcmp(buf, "owner ", 6) == 0)
-//         {
-//             u_owner(threadArgs->pathf, buf);
-//         }
-//         else if (memcmp(buf, "help\n", 5) == 0)
-//         {
-//             displayHelp();
-//         }
-//         else printf("--Invalid command or arguments missing.\n");
-//     }
-// }
-
-// void exitSequence(thread_t* threadArgs)
-// {
-//     free(threadArgs->pMask);
-//     free(threadArgs->pmxIndexer);
-//     free(threadArgs->pIndexStat);
-//     free(threadArgs->tempBuffer);
-
-//     if (DEBUGMAIN && threadArgs->tid) printf("[main] Waiting to join with indexing thread.\n");
-    
-//     // if there was an active thread check for its termination
-//     if (threadArgs->tid && pthread_join(threadArgs->tid, NULL)) ERR("Can't join with indexer thread");
-//     else if (DEBUGMAIN && threadArgs->tid != 0) printf("[main] Joined with indexer thread.\n");
-//     else if (DEBUGMAIN && threadArgs->tid == 0) printf("[main] There's no indexer thread to join.\n");
-
-//     printf("Ending **mole**.\n");
-// }
-
-// typedef struct thread_t
-// {
-//     pthread_t tid;
-//     pthread_t mtid;         // main thread's tid
-//     char* tempBuffer;
-//     char* pathd;
-//     char* pathf;
-//     int t;
-//     unsigned short newIndex; //0:old index file exists, 1:does not exist new needed, 2:indexing initiated by user
-//     bool exitFlag;
-//     struct stat* pIndexStat;
-//     sigset_t* pMask;
-//     pthread_mutex_t* pmxIndexer;
-// } thread_t;
-
-
 
 
 int main(int argc, char** argv)
 {	
     
-    struct gamedata_t gamedata;    
+    struct gamedata_t gamedata;
 
     // INITIALIZATION
     initialization(argc, argv, &gamedata);
+
+    if(DEBUGMAIN) 
+    {
+        for(int i = 0; i < gamedata.snakesNo; i++)
+            printf("Snake no: %d char: %c speed: %d\n", i+1, gamedata.snakesData[i].c, gamedata.snakesData[i].s);
+    }
 
     
     /*
