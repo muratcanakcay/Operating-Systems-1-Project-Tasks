@@ -14,13 +14,13 @@
 #include <time.h>
 
 // used to turn the debug messages on/off
+#define HERE printf("********************HERE******************\n");
 #define DEBUGMAIN 1
+#define DEBUGINIT 1
+#define DEBUGMAP 1
 #define DEBUGARGS 1
-#define DEBUGTHREAD 0
-#define DEBUGINDEXING 0
-#define DEBUGWRITEFILE 0
-#define DEBUGQUICKEXIT 0
-#define DEBUGSIMULATION 0
+#define DEBUGPLACEFOOD 1
+#define MAPTEST 0
 
 #define MAX_X 100
 #define MIN_X 10
@@ -36,7 +36,7 @@
 		     fprintf(stderr,"%s:%d\n",__FILE__,__LINE__),\
 		     exit(EXIT_FAILURE))
 
-int tempfile; // global file descriptor for temp file
+typedef unsigned int UINT;
 
 typedef struct xy_t
 {
@@ -53,11 +53,12 @@ typedef struct snake_t
 
 typedef struct gamedata_t
 {
-    xy_t dim;                   // map dimensions
+    xy_t mapdim;                // map dimensions
+    char** map;                 // 2x2 map array            // MUST BE FREED IN EXIT SEQ!!!
+    int snakeCount;             // number of snakes
+    snake_t* snakes;            // data for each snake  -   // MUST BE FREED IN EXIT SEQ!!!
     char* pathf;                // save file path
     unsigned short saveFile;    // 0: save file not given, 1: save file given
-    int snakeCount;             // number of snakes
-    snake_t* snakes;            // data for each snake  -  // MUST BE FREED IN EXIT SEQ!!!
 } gamedata_t;
 
 
@@ -65,7 +66,8 @@ typedef struct gamedata_t
 
 
 //function declarations
-int processSnakeArgs(char* snake, gamedata_t* gamedata);
+void processSnakeArgs(char* snake, gamedata_t* gamedata);
+void createMap(gamedata_t* gamedata);
 
 
 
@@ -82,10 +84,12 @@ void usage(){
 
 void readArgs(int argc, char** argv, gamedata_t* gamedata)
 {
-	int c, xcount = 0, ycount = 0, fcount = 0;
+	if (DEBUGARGS) printf("[READARGS]\n");
+    
+    int c, xcount = 0, ycount = 0, fcount = 0;
     gamedata->saveFile = 1;
-    gamedata->dim.x = DEFAULT_X;
-    gamedata->dim.y = DEFAULT_Y;
+    gamedata->mapdim.x = DEFAULT_X;
+    gamedata->mapdim.y = DEFAULT_Y;
     gamedata->snakeCount = 0;
     snake_t* snakes = NULL;
     gamedata->snakes = snakes;
@@ -94,12 +98,12 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
         switch (c)
         {
             case 'x':
-                gamedata->dim.x = atoi(optarg);
-                if (gamedata->dim.x < MIN_X || gamedata->dim.x > MAX_X || ++xcount > 1) usage();
+                gamedata->mapdim.x = atoi(optarg);
+                if (gamedata->mapdim.x < MIN_X || gamedata->mapdim.x > MAX_X || ++xcount > 1) usage();
                 break;
             case 'y':
-                gamedata->dim.y = atoi(optarg);
-                if (gamedata->dim.y < MIN_Y || gamedata->dim.y > MAX_Y || ++ycount > 1) usage();
+                gamedata->mapdim.y = atoi(optarg);
+                if (gamedata->mapdim.y < MIN_Y || gamedata->mapdim.y > MAX_Y || ++ycount > 1) usage();
                 break;
             case 'f':
                 if (++fcount > 1) usage();                
@@ -125,9 +129,9 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
         }
     }    
 
-    if(DEBUGARGS)
+    if (DEBUGARGS)
     {
-        printf("[READARGS] x:%d y:%d saveFile:%s, ", gamedata->dim.x, gamedata->dim.y, gamedata->pathf);
+        printf("[READARGS] x:%d y:%d saveFile:%s, ", gamedata->mapdim.x, gamedata->mapdim.y, gamedata->pathf);
         printf("arguments: argc:%d optind:%d\n", argc, optind);
     }
 
@@ -142,10 +146,15 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
         if (DEBUGARGS) printf("\n[READARGS] Processing snake argument %d : %s\n", i-optind+1, argv[i]);        
         processSnakeArgs(argv[i], gamedata);
     }
+
+    if (DEBUGARGS) printf("[END READARGS]\n");
+    return;
 }
 
-int processSnakeArgs(char* datastring, gamedata_t* gamedata)
+void processSnakeArgs(char* datastring, gamedata_t* gamedata)
 {
+    if (DEBUGARGS) printf("[PROCESSSNAKEARGS]\n");
+    
     int count = 0;
     char* p = NULL;    
     snake_t* extendedSnakes;
@@ -172,7 +181,7 @@ int processSnakeArgs(char* datastring, gamedata_t* gamedata)
             if (strlen(p) > 1 || !isupper(p[0])) usage();  // check uppercase char            
             newSnake->c = *p;              
             
-            if (DEBUGARGS) printf("[READARGS] first argument: %s  in gamedata: %c\n", p, newSnake->c);
+            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] first argument: %s  in gamedata: %c\n", p, newSnake->c);
         }
         
         if (count == 2) 
@@ -180,7 +189,7 @@ int processSnakeArgs(char* datastring, gamedata_t* gamedata)
             if ( (newSnake->s = strtol(p, NULL, 10)) == 0) usage(); // check integer
             if (newSnake->s < MIN_SPEED || newSnake->s > MAX_SPEED) usage(); // check speed value
             
-            if (DEBUGARGS) printf("[READARGS] second argument: %s in gamedata: %d\n", p, newSnake->s);
+            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] second argument: %s in gamedata: %d\n", p, newSnake->s);
         }
         
         p = strtok(NULL, ":");        
@@ -188,13 +197,97 @@ int processSnakeArgs(char* datastring, gamedata_t* gamedata)
 
     gamedata->snakes[gamedata->snakeCount++] = *newSnake;
 
-    return 1;
+    if (DEBUGARGS) printf("[END PROCESSSNAKEARGS]\n");
+    return;
+}
+
+void initSavedGame(gamedata_t* gamedata) 
+{
+
+}
+
+void initNewGame(gamedata_t* gamedata) 
+{
+    createMap(gamedata);
+}
+
+void showMap(gamedata_t* gamedata)
+{
+    // create top and bottom border
+    printf("\n");
+    char border[gamedata->mapdim.x + 2];
+    border[0] = border[gamedata->mapdim.x + 1] = 'X';
+    for (int i = 0; i < gamedata->mapdim.x; i++)
+        border[i+1] = '-';
+    
+    // print map
+    puts(border);
+    for(int r = 0; r < gamedata->mapdim.y; r++)
+    {
+        printf("|");
+        for(int c = 0; c < gamedata->mapdim.x; c++)
+            printf("%c", gamedata->map[r][c]);
+        printf("|\n");
+    }
+    puts(border);
+}
+
+void placeFood(gamedata_t* gamedata, UINT seed)
+{
+    if (DEBUGPLACEFOOD) printf("[PLACEFOOD]\n");
+    
+    int placed = 0;   
+    
+    while (!placed)
+    {
+        int r = (rand_r(&seed) % gamedata->mapdim.y);
+        int c = (rand_r(&seed) % gamedata->mapdim.x);
+
+        //printf("%d %d", r, c);
+
+        if (gamedata->map[r][c] == ' ')
+            (gamedata->map[r][c] = 'o') && (placed = 1);
+    }
+
+    return;
+
 }
 
 void createMap(gamedata_t* gamedata)
 {
+    if (DEBUGMAP) printf("[CREATEMAP]\n");
+
+    char** map; 
+
+    // allocate memory for map
+    if ( (map = (char**) calloc(gamedata->mapdim.y, sizeof(char*))) == NULL ) ERR("calloc()");
+    for (int r = 0 ; r < gamedata->mapdim.y ; r++)
+    {
+        map[r] = (char*) calloc(gamedata->mapdim.x, sizeof(char));
+        if ( map[r] == NULL ) ERR("calloc()"); 
+    }   
+
+    // initialize map with space characters
+    for(int r = 0; r < gamedata->mapdim.y; r++)
+        for(int c = 0; c < gamedata->mapdim.x; c++)
+            map[r][c] = ' ';
+    
+    gamedata->map = map;
+
+    // place food on the map
+    for(int i = 0; i < gamedata->snakeCount; i++)
+        placeFood(gamedata, rand());    
+
+    showMap(gamedata);
+
+    
 
 
+
+
+
+    
+    return;
 
 
 
@@ -202,34 +295,32 @@ void createMap(gamedata_t* gamedata)
 
 void initialization(int argc, char** argv, gamedata_t* gamedata)
 {
+    if (DEBUGINIT) printf("[INITIALIZATION]\n");
+
     int saveExists = 0;
     
+    
+
     // initialize command line arguments
     readArgs(argc, argv, gamedata);
     
     
-    if(DEBUGMAIN) 
-    {
-        
-        for(int i = 0; i < gamedata->snakeCount; i++)
-            printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gamedata->snakes[i].c, gamedata->snakes[i].s);
-    }
-
     // check if an old save file exists // DO I NEED TO DO IT HERE OR IN CREATE MAP? 
     if (gamedata->saveFile)
-    {
+    {        
         struct stat* saveStat;
         if ( (saveStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc");
         saveExists = 1 + lstat(gamedata->pathf, saveStat);
         free(saveStat);
     }
 
-    printf("[INITIALIZATION] Save file exists: %d", saveExists);
+    
 
-    // initialize map
-    createMap(gamedata);
+    if (DEBUGINIT) printf("[INITIALIZATION] Save file exists: %d\n", saveExists);
+    
 
-
+    if (saveExists) initSavedGame(gamedata); 
+    else initNewGame(gamedata);
 
     /*
     
@@ -267,23 +358,17 @@ void initialization(int argc, char** argv, gamedata_t* gamedata)
     printf("\nStarting **tsnake**.\n");
 }
 
-
-
-
 int main(int argc, char** argv)
 {	
-    
+    srand(time(NULL));
     struct gamedata_t gamedata;
 
     // INITIALIZATION
     initialization(argc, argv, &gamedata);
 
-    if(DEBUGMAIN) 
-    {
+    if (DEBUGMAIN) 
         for(int i = 0; i < gamedata.snakeCount; i++)
             printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gamedata.snakes[i].c, gamedata.snakes[i].s);
-    }
-
     
     /*
     // STARTUP INDEXING
