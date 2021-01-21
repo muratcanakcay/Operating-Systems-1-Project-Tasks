@@ -30,7 +30,6 @@
 #define MAX_SPEED 1000
 #define DEFAULT_X 20
 #define DEFAULT_Y 20
-#define MAX_SNAKES 30
 
 
 #define ERR(source) (perror(source),\
@@ -39,31 +38,34 @@
 
 int tempfile; // global file descriptor for temp file
 
-typedef struct snake_t
+typedef struct xy_t
 {
     int x;
-    int y; 
-    char c;      
-    int s;         
+    int y;
+} xy_t;
+
+typedef struct snake_t
+{
+    xy_t pos;
+    char c;
+    int s;
 } snake_t;
 
 typedef struct gamedata_t
 {
-    int x;
-    int y; 
-    char* pathf;      
-    unsigned short saveFile; //0: save file not given, 1: save file given
-    snake_t* snakesData;
-    int snakesNo;
-    
-    bool exitFlag;
-    
+    xy_t dim;                   // map dimensions
+    char* pathf;                // save file path
+    unsigned short saveFile;    // 0: save file not given, 1: save file given
+    int snakeCount;             // number of snakes
+    snake_t* snakes;            // data for each snake  -  // MUST BE FREED IN EXIT SEQ!!!
 } gamedata_t;
 
 
 
+
+
 //function declarations
-int readSnakeData(char* snakedata, gamedata_t* gamedata);
+int processSnakeArgs(char* snake, gamedata_t* gamedata);
 
 
 
@@ -82,22 +84,22 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
 {
 	int c, xcount = 0, ycount = 0, fcount = 0;
     gamedata->saveFile = 1;
-    gamedata->x = DEFAULT_X;
-    gamedata->y = DEFAULT_Y;
-    gamedata->snakesNo = 0;
-    snake_t snakesData[MAX_SNAKES];
-    gamedata->snakesData = snakesData;
+    gamedata->dim.x = DEFAULT_X;
+    gamedata->dim.y = DEFAULT_Y;
+    gamedata->snakeCount = 0;
+    snake_t* snakes = NULL;
+    gamedata->snakes = snakes;
     
     while ((c = getopt(argc, argv, "x:y:f:")) != -1)
         switch (c)
         {
             case 'x':
-                gamedata->x = atoi(optarg);
-                if (gamedata->x < MIN_X || gamedata->x > MAX_X || ++xcount > 1) usage();
+                gamedata->dim.x = atoi(optarg);
+                if (gamedata->dim.x < MIN_X || gamedata->dim.x > MAX_X || ++xcount > 1) usage();
                 break;
             case 'y':
-                gamedata->y = atoi(optarg);
-                if (gamedata->y < MIN_Y || gamedata->y > MAX_Y || ++ycount > 1) usage();
+                gamedata->dim.y = atoi(optarg);
+                if (gamedata->dim.y < MIN_Y || gamedata->dim.y > MAX_Y || ++ycount > 1) usage();
                 break;
             case 'f':
                 if (++fcount > 1) usage();                
@@ -125,11 +127,11 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
 
     if(DEBUGARGS)
     {
-        printf("x:%d y:%d saveFile:%s, ", gamedata->x, gamedata->y, gamedata->pathf);
+        printf("[READARGS] x:%d y:%d saveFile:%s, ", gamedata->dim.x, gamedata->dim.y, gamedata->pathf);
         printf("arguments: argc:%d optind:%d\n", argc, optind);
     }
 
-    if (argc<=optind) // at least one snake character and speed (c1:s1) not given
+    if (argc<=optind) // no [c:s] argument given
     {
         printf("Error: At least one snake must be declared in the form [c1:s1]\n");
         usage();
@@ -137,18 +139,26 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
 
     for(int i = optind; i < argc; i++) 
     {
-        if (DEBUGARGS) printf("\nProcessing snake argument %d : %s\n", i-optind+1, argv[i]);
-        gamedata->snakesNo++;
-        readSnakeData(argv[i], gamedata);
+        if (DEBUGARGS) printf("\n[READARGS] Processing snake argument %d : %s\n", i-optind+1, argv[i]);        
+        processSnakeArgs(argv[i], gamedata);
     }
 }
 
-int readSnakeData(char* datastring, gamedata_t* gamedata)
+int processSnakeArgs(char* datastring, gamedata_t* gamedata)
 {
     int count = 0;
-    char* p = NULL;
-    snake_t* snakedata = (snake_t*) calloc(1, sizeof(snake_t));
+    char* p = NULL;    
+    snake_t* extendedSnakes;
+
+    // extend snakes array by 1 to accomodate new snake
+    if ( (extendedSnakes = (snake_t*) calloc(gamedata->snakeCount + 1, sizeof(snake_t))) == NULL) ERR("calloc");
+    memcpy(extendedSnakes, gamedata->snakes, gamedata->snakeCount * sizeof(snake_t));
+    free(gamedata->snakes); // free previous snakes array    
+    gamedata->snakes = extendedSnakes;
     
+    // allocate memory for new snake
+    snake_t* newSnake = (snake_t*) calloc(1, sizeof(snake_t)); // ALL MUST BE FREED WHEN EXITING!!!
+
     if (datastring[strlen(datastring)-1] == ':') usage(); // incorrect format - argument ends with ':'
     
     p = strtok(datastring, ":");    
@@ -156,39 +166,73 @@ int readSnakeData(char* datastring, gamedata_t* gamedata)
     while ( p != NULL)
     {
         if (++count > 2) usage();
+        
         if (count == 1) 
         {
             if (strlen(p) > 1 || !isupper(p[0])) usage();  // check uppercase char            
-            snakedata->c = *p;              
-            if (DEBUGARGS) printf("first argument: %s  in gamedata: %c\n", p, snakedata->c);
+            newSnake->c = *p;              
+            
+            if (DEBUGARGS) printf("[READARGS] first argument: %s  in gamedata: %c\n", p, newSnake->c);
         }
+        
         if (count == 2) 
         {
-            if ( (snakedata->s = strtol(p, NULL, 10)) == 0) usage(); // check integer
-            if (snakedata->s < MIN_SPEED || snakedata->s > MAX_SPEED) usage(); // check speed value
-            if (DEBUGARGS) printf("second argument: %s in gamedata: %d\n", p, snakedata->s);
+            if ( (newSnake->s = strtol(p, NULL, 10)) == 0) usage(); // check integer
+            if (newSnake->s < MIN_SPEED || newSnake->s > MAX_SPEED) usage(); // check speed value
+            
+            if (DEBUGARGS) printf("[READARGS] second argument: %s in gamedata: %d\n", p, newSnake->s);
         }
+        
         p = strtok(NULL, ":");        
     }
 
-    gamedata->snakesData[gamedata->snakesNo - 1] = *snakedata;
+    gamedata->snakes[gamedata->snakeCount++] = *newSnake;
 
     return 1;
 }
 
+void createMap(gamedata_t* gamedata)
+{
+
+
+
+
+
+}
+
 void initialization(int argc, char** argv, gamedata_t* gamedata)
 {
+    int saveExists = 0;
+    
     // initialize command line arguments
     readArgs(argc, argv, gamedata);
     
+    
+    if(DEBUGMAIN) 
+    {
+        
+        for(int i = 0; i < gamedata->snakeCount; i++)
+            printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gamedata->snakes[i].c, gamedata->snakes[i].s);
+    }
+
+    // check if an old save file exists // DO I NEED TO DO IT HERE OR IN CREATE MAP? 
+    if (gamedata->saveFile)
+    {
+        struct stat* saveStat;
+        if ( (saveStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc");
+        saveExists = 1 + lstat(gamedata->pathf, saveStat);
+        free(saveStat);
+    }
+
+    printf("[INITIALIZATION] Save file exists: %d", saveExists);
+
+    // initialize map
+    createMap(gamedata);
+
+
+
     /*
     
-    // check if an old save file exists
-    int saveStatus = -1;
-    struct stat* saveStat;
-    if ( (saveStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
-    saveStatus = lstat(data->pathf, saveStat);
-
     // initialize signal mask
     sigset_t* mask;
     if ( (mask = (sigset_t*) malloc(sizeof(sigset_t))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
@@ -236,8 +280,8 @@ int main(int argc, char** argv)
 
     if(DEBUGMAIN) 
     {
-        for(int i = 0; i < gamedata.snakesNo; i++)
-            printf("Snake no: %d char: %c speed: %d\n", i+1, gamedata.snakesData[i].c, gamedata.snakesData[i].s);
+        for(int i = 0; i < gamedata.snakeCount; i++)
+            printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gamedata.snakes[i].c, gamedata.snakes[i].s);
     }
 
     
