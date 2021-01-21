@@ -21,7 +21,7 @@
 #define DEBUGARGS 1
 #define DEBUGPLACEFOOD 1
 #define DEBUGSPAWNSNAKE 1
-#define MAPTEST 0
+
 
 #define MAX_X 100
 #define MIN_X 10
@@ -45,23 +45,23 @@ typedef struct xy_t
     int y;
 } xy_t;
 
-typedef struct segment          // double or single linked list?
+typedef struct segment          // snake body parts - double or single linked list?
 {
-    xy_t pos;
-    struct segment* next;
-    struct segment* previous;   // useless?
-    enum direction direction;   // useless?    
+    xy_t pos;                   // position of the segment on the map
+    struct segment* next;       // pointer to next segment (tail at the end)
+    struct segment* previous;   // pointer to previous segment (head at the beginning) - is this useless?
+    enum direction direction;   // direction of movement/head/tail ?  - is this useless?    
 } segment;
 
 typedef struct snake_t
 {
-    pthread_t tid;
-    UINT seed;
-    char c;
-    int s;
+    pthread_t tid;              // thread id
+    UINT seed;                  // random seed
+    char c;                     // symbol
+    int s;                      // speed
     xy_t target;                // targeted food tile
-    segment* head;
-    segment* tail;
+    segment* head;              // head segment
+    segment* tail;              // tail segment
 } snake_t;
 
 typedef struct gamedata_t
@@ -69,7 +69,7 @@ typedef struct gamedata_t
     xy_t mapDim;                // map dimensions
     char** map;                 // 2x2 map array            // MUST BE FREED IN EXIT SEQ!!!
     int snakeCount;             // number of snakes
-    snake_t* snakes;            // data for each snake  -   // MUST BE FREED IN EXIT SEQ!!!
+    snake_t* snakes;            // data for snake threads   // MUST BE FREED IN EXIT SEQ!!!
     xy_t* foods;                // pos. of each food    -   // MUST BE FREED IN EXIT SEQ!!!
     char* pathf;                // save file path
     unsigned short saveFile;    // 0: save file not given, 1: save file given
@@ -100,15 +100,7 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
 	if (DEBUGARGS) printf("[READARGS]\n");
     
     int c, xcount = 0, ycount = 0, fcount = 0;
-    gamedata->saveFile = 1;
-    gamedata->mapDim.x = DEFAULT_X;
-    gamedata->mapDim.y = DEFAULT_Y;
-    gamedata->snakeCount = 0;
-    xy_t* foods = NULL;
-    gamedata->foods = foods;
-    snake_t* snakes = NULL;
-    gamedata->snakes = snakes;
-    
+        
     while ((c = getopt(argc, argv, "x:y:f:")) != -1)
         switch (c)
         {
@@ -234,8 +226,6 @@ void extendArrays(gamedata_t* gamedata)
     return;
 }
 
-
-
 void initSavedGame(gamedata_t* gamedata) 
 {
     // TODO
@@ -249,7 +239,7 @@ void initNewGame(gamedata_t* gamedata)
     for(int i = 0; i < gamedata->snakeCount; i++)
         placeFood(gamedata, i, rand());      
 
-
+    // spawn snakes on the map
     for(int i = 0; i < gamedata->snakeCount; i++)
         spawnSnake(gamedata, i);   /// new thread should execute this
 }
@@ -270,9 +260,10 @@ void spawnSnake(gamedata_t* gamedata, int snakeNo)
 
         if (gamedata->map[r][c] == ' ')
         {
-            (gamedata->map[r][c] = gamedata->snakes[snakeNo].c) && (placed = 1);
+            gamedata->map[r][c] = gamedata->snakes[snakeNo].c;
             head->pos.x = c;
             head->pos.y = r;
+            placed = 1;
         }        
     }
 
@@ -318,10 +309,11 @@ void placeFood(gamedata_t* gamedata, int foodNo, UINT seed)
 
         if (gamedata->map[r][c] == ' ')
         {
-            (gamedata->map[r][c] = 'o') && (placed = 1);
+            gamedata->map[r][c] = 'o';
             newFood->x = c;
             newFood->y = r;
             gamedata->foods[foodNo] = *newFood;
+            placed = 1;
         }
     }
 
@@ -358,15 +350,22 @@ void initialization(int argc, char** argv, gamedata_t* gamedata)
 {
     if (DEBUGINIT) printf("[INITIALIZATION]\n");
 
+    // initialize gamedata 
+    gamedata->saveFile = 1;
+    gamedata->mapDim.x = DEFAULT_X;
+    gamedata->mapDim.y = DEFAULT_Y;
+    gamedata->snakeCount = 0;    
+    gamedata->foods = NULL;    
+    gamedata->snakes = NULL;
     int saveExists = 0;
-
-    // initialize command line arguments
-    readArgs(argc, argv, gamedata);
 
     // initialize random seeds for snake threads
     for(int i = 0; i < gamedata->snakeCount; i++)
         gamedata->snakes[i].seed = rand();
-    
+
+    // initialize command line arguments
+    readArgs(argc, argv, gamedata);
+
     // check if an old save file exists // DO I NEED TO DO IT HERE OR IN CREATE MAP? 
     if (gamedata->saveFile)
     {        
@@ -398,20 +397,6 @@ void initialization(int argc, char** argv, gamedata_t* gamedata)
     pthread_mutex_t* mxIndexer;
     mxIndexer = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t)); // free'd in exit_sequence()
     if (pthread_mutex_init(mxIndexer, NULL)) ERR("Couldn't initialize mutex!");
-
-    // initialize thread_t struct to pass to the thread and other functions    
-    
-    threadArgs->tid = 0;    
-    threadArgs->mtid = pthread_self();
-    threadArgs->pathd = pathd;
-    threadArgs->pathf = pathf;
-    threadArgs->t = t;
-    threadArgs->newIndex = indexStatus ? 1 : 0;
-    threadArgs->pIndexStat = indexStat;
-    threadArgs->pMask = mask;
-    threadArgs->pmxIndexer = mxIndexer;
-    threadArgs->exitFlag = 0;
-    
     */
 
     printf("\nStarting **tsnake**.\n");
