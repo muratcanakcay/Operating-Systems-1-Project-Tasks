@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <math.h>
 
 // used to turn the debug messages on/off
 #define HERE printf("********************HERE******************\n");
@@ -21,6 +22,8 @@
 #define DEBUGARGS 1
 #define DEBUGPLACEFOOD 1
 #define DEBUGSPAWNSNAKE 1
+#define DEBUGSNAKEWORK 1
+#define DEBUGMOVESNAKE 1
 
 
 #define MAX_X 100
@@ -36,8 +39,10 @@
 		     fprintf(stderr,"%s:%d\n",__FILE__,__LINE__),\
 		     exit(EXIT_FAILURE))
 
-enum direction {right = 3, down = 6, left = 9, up = 12};
+enum direction {up = 1, right = 2, down = 4, left = 8};
 typedef unsigned int UINT;
+typedef struct timespec timespec_t;
+volatile sig_atomic_t last_signal = 0;
 
 typedef struct xy_t
 {
@@ -49,8 +54,7 @@ typedef struct segment          // snake body parts - double or single linked li
 {
     xy_t pos;                   // position of the segment on the map
     struct segment* next;       // pointer to next segment (tail at the end)
-    struct segment* previous;   // pointer to previous segment (head at the beginning) - is this useless?
-    enum direction direction;   // direction of movement/head/tail ?  - is this useless?    
+    struct segment* previous;   // pointer to previous segment (head at the beginning) - is this useless?    
 } segment;
 
 typedef struct snake_t
@@ -59,7 +63,9 @@ typedef struct snake_t
     UINT seed;                  // random seed
     char c;                     // symbol
     int s;                      // speed
+    int length;
     xy_t target;                // targeted food tile
+    enum direction direction;   // direction of movement
     segment* head;              // head segment
     segment* tail;              // tail segment
 } snake_t;
@@ -73,15 +79,18 @@ typedef struct gamedata_t
     xy_t* foods;                // pos. of each food    -   // MUST BE FREED IN EXIT SEQ!!!
     char* pathf;                // save file path
     unsigned short saveFile;    // 0: save file not given, 1: save file given
+    pthread_mutex_t* pmxMap; // mutex for updateMap()
+    sigset_t* pMask;            // signal mask
 } gamedata_t;
 
 //function declarations
-void processSnakeArgs(char* snake, gamedata_t* gamedata);
-void createMap(gamedata_t* gamedata);
-void spawnSnake(gamedata_t* gamedata, int snakeNo);
-void printMap(gamedata_t* gamedata, int fd);
-void placeFood(gamedata_t* gamedata, int foodNo, UINT seed);
-void extendArrays(gamedata_t* gamedata);
+void processSnakeArgs(char* snake, gamedata_t* gameData);
+void createMap(gamedata_t* gameData);
+void spawnSnake(gamedata_t* gameData, int snakeNo);
+void printMap(gamedata_t* gameData, int fd);
+void placeFood(gamedata_t* gameData, int foodNo);
+void extendArrays(gamedata_t* gameData);
+int getSnakeNo(gamedata_t* gameData);
 
 
 //-----------
@@ -95,7 +104,26 @@ void usage(){
     fprintf(stderr," (must be between %d and %d) - At least one snake must be declared.\n\n", MIN_SPEED, MAX_SPEED);
     exit(EXIT_FAILURE);}
 
-void readArgs(int argc, char** argv, gamedata_t* gamedata)
+void msleep(UINT milisec) 
+{
+    time_t sec= (int)(milisec/1000);
+    milisec = milisec - (sec*1000);
+    timespec_t req= {0};
+    req.tv_sec = sec;
+    req.tv_nsec = milisec * 1000000L;
+    if(nanosleep(&req,&req)) ERR("nanosleep");
+}
+void sethandler( void (*f)(int), int sigNo) {
+	struct sigaction act;
+	memset(&act, 0, sizeof(struct sigaction));
+	act.sa_handler = f;
+	if (-1==sigaction(sigNo, &act, NULL)) ERR("sigaction");
+}
+void sig_handler(int sig) {
+	printf("[%d] received signal %d\n", getpid(), sig);
+	last_signal = sig;
+}
+void readArgs(int argc, char** argv, gamedata_t* gameData)
 {
 	if (DEBUGARGS) printf("[READARGS]\n");
     
@@ -105,16 +133,16 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
         switch (c)
         {
             case 'x':
-                gamedata->mapDim.x = atoi(optarg);
-                if (gamedata->mapDim.x < MIN_X || gamedata->mapDim.x > MAX_X || ++xcount > 1) usage();
+                gameData->mapDim.x = atoi(optarg);
+                if (gameData->mapDim.x < MIN_X || gameData->mapDim.x > MAX_X || ++xcount > 1) usage();
                 break;
             case 'y':
-                gamedata->mapDim.y = atoi(optarg);
-                if (gamedata->mapDim.y < MIN_Y || gamedata->mapDim.y > MAX_Y || ++ycount > 1) usage();
+                gameData->mapDim.y = atoi(optarg);
+                if (gameData->mapDim.y < MIN_Y || gameData->mapDim.y > MAX_Y || ++ycount > 1) usage();
                 break;
             case 'f':
                 if (++fcount > 1) usage();                
-                gamedata->pathf = *(argv + optind - 1); 
+                gameData->pathf = *(argv + optind - 1); 
                 break;
             default:
                 usage();
@@ -126,19 +154,19 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
         
         if (env != NULL) // $SNAKEFILE set
         {
-            gamedata->pathf = env;          
+            gameData->pathf = env;          
         }
         else // saving not possible
         {
             printf("Warning: Save file not set. The game will not be saved!\n");
-            gamedata->pathf = NULL;
-            gamedata->saveFile = 0;
+            gameData->pathf = NULL;
+            gameData->saveFile = 0;
         }
     }    
 
     if (DEBUGARGS)
     {
-        printf("[READARGS] x:%d y:%d saveFile:%s, ", gamedata->mapDim.x, gamedata->mapDim.y, gamedata->pathf);
+        printf("[READARGS] x:%d y:%d saveFile:%s, ", gameData->mapDim.x, gameData->mapDim.y, gameData->pathf);
         printf("arguments: argc:%d optind:%d\n", argc, optind);
     }
 
@@ -151,22 +179,22 @@ void readArgs(int argc, char** argv, gamedata_t* gamedata)
     for(int i = optind; i < argc; i++) 
     {
         if (DEBUGARGS) printf("\n[READARGS] Processing snake argument %d : %s\n", i-optind+1, argv[i]);        
-        processSnakeArgs(argv[i], gamedata);
+        processSnakeArgs(argv[i], gameData);
     }
 
     if (DEBUGARGS) printf("[END READARGS]\n");
     return;
 }
 
-
-void processSnakeArgs(char* datastring, gamedata_t* gamedata)
+// also will be used for user command "spawn"
+void processSnakeArgs(char* datastring, gamedata_t* gameData)
 {
     if (DEBUGARGS) printf("[PROCESSSNAKEARGS]\n");
     
     int count = 0;
     char* p = NULL;
     
-    extendArrays(gamedata); // extend foods and snakes arrays in gamedata by one
+    extendArrays(gameData); // extend foods and snakes arrays in gameData by one
     
     // allocate memory for new snake
     snake_t* newSnake = (snake_t*) calloc(1, sizeof(snake_t));
@@ -184,7 +212,7 @@ void processSnakeArgs(char* datastring, gamedata_t* gamedata)
             if (strlen(p) > 1 || !isupper(p[0])) usage();  // check uppercase char            
             newSnake->c = *p;              
             
-            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] first argument: %s  in gamedata: %c\n", p, newSnake->c);
+            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] first argument: %s  in gameData: %c\n", p, newSnake->c);
         }
         
         if (count == 2) 
@@ -192,212 +220,383 @@ void processSnakeArgs(char* datastring, gamedata_t* gamedata)
             if ( (newSnake->s = strtol(p, NULL, 10)) == 0) usage(); // check integer
             if (newSnake->s < MIN_SPEED || newSnake->s > MAX_SPEED) usage(); // check speed value
             
-            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] second argument: %s in gamedata: %d\n", p, newSnake->s);
+            if (DEBUGARGS) printf("[PROCESSSNAKEARGS] second argument: %s in gameData: %d\n", p, newSnake->s);
         }
         
         p = strtok(NULL, ":");        
     }
 
-    gamedata->snakes[gamedata->snakeCount++] = *newSnake;
+    gameData->snakes[gameData->snakeCount++] = *newSnake;
 
     if (DEBUGARGS) printf("[END PROCESSSNAKEARGS]\n");
     return;
 }
-
-
-void extendArrays(gamedata_t* gamedata)
+// will be used whenever a new snake is added
+void extendArrays(gamedata_t* gameData)
 {
     // extend snakes array by 1 to accomodate new snake
     snake_t* extendedSnakes;    
     
-    if ( (extendedSnakes = (snake_t*) calloc(gamedata->snakeCount + 1, sizeof(snake_t))) == NULL) ERR("calloc");
-    memcpy(extendedSnakes, gamedata->snakes, gamedata->snakeCount * sizeof(snake_t));
-    free(gamedata->snakes); // free previous snakes array
-    gamedata->snakes = extendedSnakes;
+    if ( (extendedSnakes = (snake_t*) calloc(gameData->snakeCount + 1, sizeof(snake_t))) == NULL) ERR("calloc");
+    memcpy(extendedSnakes, gameData->snakes, gameData->snakeCount * sizeof(snake_t));
+    free(gameData->snakes); // free previous snakes array
+    gameData->snakes = extendedSnakes;
 
     // extend foods array by 1 to accomodate new foods
     xy_t* extendedFoods;
     
-    if ( (extendedFoods = (xy_t*) calloc(gamedata->snakeCount + 1, sizeof(xy_t))) == NULL) ERR("calloc");
-    memcpy(extendedFoods, gamedata->foods, gamedata->snakeCount * sizeof(xy_t));
-    free(gamedata->foods); // free previous foods array
-    gamedata->foods = extendedFoods;
+    if ( (extendedFoods = (xy_t*) calloc(gameData->snakeCount + 1, sizeof(xy_t))) == NULL) ERR("calloc");
+    memcpy(extendedFoods, gameData->foods, gameData->snakeCount * sizeof(xy_t));
+    free(gameData->foods); // free previous foods array
+    gameData->foods = extendedFoods;
 
     return;
 }
 
-void initSavedGame(gamedata_t* gamedata) 
+void initSavedGame(gamedata_t* gameData) 
 {
     // TODO
 }
 
-void initNewGame(gamedata_t* gamedata) 
+void initNewGame(gamedata_t* gameData) 
 {
-    createMap(gamedata);
+    createMap(gameData);
 
     // place initial food on the map
-    for(int i = 0; i < gamedata->snakeCount; i++)
-        placeFood(gamedata, i, rand());      
+    for(int i = 0; i < gameData->snakeCount; i++)
+        placeFood(gameData, i);      
 
     // spawn snakes on the map
-    for(int i = 0; i < gamedata->snakeCount; i++)
-        spawnSnake(gamedata, i);   /// new thread should execute this
+    for(int i = 0; i < gameData->snakeCount; i++)
+        spawnSnake(gameData, i);   /// new thread should execute this
+}
+// helper function for snakeThread()
+int getSnakeNo(gamedata_t* gameData)
+{    
+    pthread_t tid = pthread_self();
+    for (int i = 0; i < gameData->snakeCount ; i++)
+        if (pthread_equal(tid, gameData->snakes[i].tid)) return i;
+    return -1;
 }
 
-void spawnSnake(gamedata_t* gamedata, int snakeNo)
+xy_t selectTarget(gamedata_t* gameData, int snakeNo)
+{
+    return gameData->foods[rand_r(&gameData->snakes[snakeNo].seed) % gameData->snakeCount];    
+}
+
+int getEmptyTiles(gamedata_t* gameData, int snakeNo)
+{
+    int emptyTiles = 0;
+    xy_t snakePos = gameData->snakes[snakeNo].head->pos;
+    
+    if (gameData->map[snakePos.x][snakePos.y - 1] == ' ') emptyTiles = emptyTiles + 1;
+    if (gameData->map[snakePos.x + 1][snakePos.y] == ' ') emptyTiles = emptyTiles + 2;
+    if (gameData->map[snakePos.x][snakePos.y + 1] == ' ') emptyTiles = emptyTiles + 4;
+    if (gameData->map[snakePos.x - 1][snakePos.y] == ' ') emptyTiles = emptyTiles + 8;
+
+    // if (snakePos.y < gameData->mapDim.y - 1 && gameData->map[snakePos.x][snakePos.y + 1] == ' ') emptyTiles = emptyTiles + 1;
+    // if (snakePos.x < gameData->mapDim.x - 1 && gameData->map[snakePos.x + 1][snakePos.y] == ' ') emptyTiles = emptyTiles + 2;
+    // if (snakePos.y > 0 && gameData->map[snakePos.x][snakePos.y -1 ] == ' ') emptyTiles = emptyTiles + 4;
+    // if (snakePos.x > 0 && gameData->map[snakePos.x - 1][snakePos.y] == ' ') emptyTiles = emptyTiles + 8;
+    
+    return emptyTiles;
+}
+
+int getFoodDirection(gamedata_t* gameData, int snakeNo)
+{
+    int foodDirection = 0;
+    xy_t snakePos = gameData->snakes[snakeNo].head->pos;
+    xy_t foodPos = gameData->snakes[snakeNo].target;
+    
+    if (foodPos.x - snakePos.x > 0) foodDirection = foodDirection + 2;
+    if (foodPos.x - snakePos.x < 0) foodDirection = foodDirection + 8;
+    if (foodPos.y - snakePos.y < 0) foodDirection = foodDirection + 1;
+    if (foodPos.y - snakePos.y > 0) foodDirection = foodDirection + 4;
+    
+    return foodDirection;
+}
+
+void selectDirection(gamedata_t* gameData, int snakeNo)
+{
+    int direction = 0;
+    int emptyTiles = getEmptyTiles(gameData, snakeNo);
+    int foodDirection = getFoodDirection(gameData, snakeNo);
+    
+    if ( (emptyTiles&foodDirection) == 0 ) // foodDirection is blocked go another direction
+    {
+        while( (emptyTiles&foodDirection&direction) == 0 )
+        {
+            direction = (int)pow(2, rand_r(&gameData->snakes[snakeNo].seed) % 4);
+        }
+    }
+    else
+    {
+        while( (foodDirection&direction) == 0 ) // go towards food
+        {
+            direction = (int)pow(2, rand_r(&gameData->snakes[snakeNo].seed) % 4);
+        }
+    }
+
+    gameData->snakes[snakeNo].direction = direction;
+}
+
+void updateMap(gamedata_t* gameData)
+{
+
+
+
+}
+
+void moveSnake(gamedata_t* gameData, int snakeNo)
+{
+    if (DEBUGMOVESNAKE) printf("[MOVESNAKE]\n");
+    
+    //add new head                
+    segment* newHead = (segment*) calloc(1, sizeof(segment));
+    newHead->previous = NULL;
+    newHead->next = gameData->snakes[snakeNo].head;
+    newHead->pos.x = gameData->snakes[snakeNo].head->pos.x;
+    newHead->pos.y = gameData->snakes[snakeNo].head->pos.y;
+    gameData->snakes[snakeNo].head = newHead;
+
+    //HERE
+    
+    //remove tail make tail->previous new tail
+    segment* tmp = gameData->snakes[snakeNo].tail;
+    if (tmp->previous) 
+    {
+        tmp->previous->next = NULL;
+        gameData->snakes[snakeNo].tail = tmp->previous;
+    }
+    else
+        gameData->snakes[snakeNo].tail = gameData->snakes[snakeNo].head;
+    
+    //HERE
+    
+    // new head position (MUTEX)
+    int d = gameData->snakes[snakeNo].direction;    
+    switch(d)
+    {
+            case 1: // up
+                gameData->snakes[snakeNo].head->pos.y--;
+                break;
+            case 2: // right
+                gameData->snakes[snakeNo].head->pos.x++;
+                break;
+            case 4: // down
+                gameData->snakes[snakeNo].head->pos.y++;
+                break;
+            case 8: // left
+                gameData->snakes[snakeNo].head->pos.x--;
+                break;
+    }
+    gameData->map[gameData->snakes[snakeNo].head->pos.y][gameData->snakes[snakeNo].head->pos.x] = gameData->snakes[snakeNo].c;
+    gameData->map[tmp->pos.y][tmp->pos.x] = ' ';
+    
+    free(tmp);  
+    //msleep(500);
+}
+
+void* snakeThread(void* voidData)
+{
+    msleep(50);
+    
+    gamedata_t* gameData = voidData;
+    int snakeNo, x = 5; 
+    if ( (snakeNo = getSnakeNo(gameData)) == -1) ERR("getSnakeNo()");
+
+    if (DEBUGSNAKEWORK) printf("Created snake thread for snake #%d with TID = %ld\n", snakeNo, gameData->snakes[snakeNo].tid); 
+    
+
+    // select food to target
+    gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
+    if (DEBUGSNAKEWORK) printf("Selected food at (%d, %d) as target\n", gameData->snakes[snakeNo].target.x, gameData->snakes[snakeNo].target.y); 
+    
+    // select direction to go    
+    HERE
+
+    // move snake
+    while(1)
+    {
+        msleep(500);
+        selectDirection(gameData, snakeNo);
+        moveSnake(gameData, snakeNo);
+    }
+    
+    
+    
+    
+    return NULL;
+}
+
+void spawnSnake(gamedata_t* gameData, int snakeNo)
 {
     if (DEBUGSPAWNSNAKE) printf("[SPAWNSNAKE]\n");
     
     segment* head = (segment*) calloc(1, sizeof(segment));
     head->next = head->previous = NULL;
+    gameData->snakes[snakeNo].head = head;
     
-    int placed = 0;   
+    int r, c, placed = 0;
     
     while (!placed)
     {
-        int r = (rand_r(&gamedata->snakes[snakeNo].seed) % gamedata->mapDim.y);
-        int c = (rand_r(&gamedata->snakes[snakeNo].seed) % gamedata->mapDim.x);
+        r = (rand_r(&gameData->snakes[snakeNo].seed) % gameData->mapDim.y);
+        c = (rand_r(&gameData->snakes[snakeNo].seed) % gameData->mapDim.x);
 
-        if (gamedata->map[r][c] == ' ')
+        // lock map when checking & updating
+        pthread_mutex_lock(gameData->pmxMap);
+        if (gameData->map[r][c] == ' ')
         {
-            gamedata->map[r][c] = gamedata->snakes[snakeNo].c;
-            head->pos.x = c;
-            head->pos.y = r;
+            gameData->map[r][c] = gameData->snakes[snakeNo].c;            
             placed = 1;
-        }        
+        }
+        pthread_mutex_unlock(gameData->pmxMap);
     }
 
-    printMap(gamedata, 1);
+    gameData->snakes[snakeNo].head->pos.x = c;
+    gameData->snakes[snakeNo].head->pos.y = r;
+    gameData->snakes[snakeNo].tail = gameData->snakes[snakeNo].head;
     
+    if (pthread_create(&gameData->snakes[snakeNo].tid, NULL, snakeThread, gameData)) ERR("pthread_create");
+    
+    if (DEBUGSPAWNSNAKE) printf("Snake #%d TID = %ld spawned.\n", snakeNo, gameData->snakes[snakeNo].tid);
+
     if (DEBUGSPAWNSNAKE) printf("[END SPAWNSNAKE]\n");
     return;    
 }
 
-void printMap(gamedata_t* gamedata, int fd) // writes the map to the file descriptor fd ( fd = 1 for stdout)
+void printMap(gamedata_t* gameData, int fd) // writes the map to the file descriptor fd ( fd = 1 for stdout)
 {
     // create top and bottom border
     printf("\n");
-    char border[gamedata->mapDim.x + 3];
-    border[0] = border[gamedata->mapDim.x + 1] = 'X';
-    for (int i = 0; i < gamedata->mapDim.x; i++)
+    char border[gameData->mapDim.x + 3];
+    border[0] = border[gameData->mapDim.x + 1] = 'X';
+    for (int i = 0; i < gameData->mapDim.x; i++)
         border[i+1] = '-';
-    border[gamedata->mapDim.x + 2] = '\n';
+    border[gameData->mapDim.x + 2] = '\n';
     
     // print map
     write(fd, border, sizeof(border));
-    for(int r = 0; r < gamedata->mapDim.y; r++)
+    for(int r = 0; r < gameData->mapDim.y; r++)
     {
         write(1, "|", 1);
-        for(int c = 0; c < gamedata->mapDim.x; c++)
-            write(fd, &gamedata->map[r][c], sizeof(char));
+        for(int c = 0; c < gameData->mapDim.x; c++)
+            write(fd, &gameData->map[r][c], sizeof(char));
         write(1, "|\n", 2);
     }
     write(fd, border, sizeof(border));
 }
 
-void placeFood(gamedata_t* gamedata, int foodNo, UINT seed)
+void placeFood(gamedata_t* gameData, int foodNo)
 {
     if (DEBUGPLACEFOOD) printf("[PLACEFOOD]\n");
     
-    int placed = 0;   
+    int r, c, placed = 0;   
     xy_t* newFood = (xy_t*) calloc(1, sizeof(xy_t));
     
     while (!placed)
     {
-        int r = (rand_r(&seed) % gamedata->mapDim.y);
-        int c = (rand_r(&seed) % gamedata->mapDim.x);
+        r = (rand_r(&gameData->snakes[foodNo].seed) % gameData->mapDim.y);
+        c = (rand_r(&gameData->snakes[foodNo].seed) % gameData->mapDim.x);
 
-        if (gamedata->map[r][c] == ' ')
+        if (gameData->map[r][c] == ' ')
         {
-            gamedata->map[r][c] = 'o';
-            newFood->x = c;
-            newFood->y = r;
-            gamedata->foods[foodNo] = *newFood;
+            gameData->map[r][c] = 'o';
             placed = 1;
         }
     }
+
+    newFood->x = c;
+    newFood->y = r;
+    gameData->foods[foodNo] = *newFood;
 
     if (DEBUGPLACEFOOD) printf("[END PLACEFOOD]\n");
     return;
 }
 
-void createMap(gamedata_t* gamedata)
+void createMap(gamedata_t* gameData)
 {
     if (DEBUGMAP) printf("[CREATEMAP]\n");
 
     char** map; 
 
     // allocate memory for map
-    if ( (map = (char**) calloc(gamedata->mapDim.y, sizeof(char*))) == NULL ) ERR("calloc()");
-    for (int r = 0 ; r < gamedata->mapDim.y ; r++)
+    if ( (map = (char**) calloc(gameData->mapDim.y, sizeof(char*))) == NULL ) ERR("calloc()");
+    for (int r = 0 ; r < gameData->mapDim.y ; r++)
     {
-        map[r] = (char*) calloc(gamedata->mapDim.x, sizeof(char));
+        map[r] = (char*) calloc(gameData->mapDim.x, sizeof(char));
         if ( map[r] == NULL ) ERR("calloc()"); 
     }   
 
     // initialize map with space characters
-    for(int r = 0; r < gamedata->mapDim.y; r++)
-        for(int c = 0; c < gamedata->mapDim.x; c++)
+    for(int r = 0; r < gameData->mapDim.y; r++)
+        for(int c = 0; c < gameData->mapDim.x; c++)
             map[r][c] = ' ';
     
-    gamedata->map = map;      
+    gameData->map = map;      
 
     return;
 }
 
-
-void initialization(int argc, char** argv, gamedata_t* gamedata)
+void initialization(int argc, char** argv, gamedata_t* gameData)
 {
     if (DEBUGINIT) printf("[INITIALIZATION]\n");
 
-    // initialize gamedata 
-    gamedata->saveFile = 1;
-    gamedata->mapDim.x = DEFAULT_X;
-    gamedata->mapDim.y = DEFAULT_Y;
-    gamedata->snakeCount = 0;    
-    gamedata->foods = NULL;    
-    gamedata->snakes = NULL;
-    int saveExists = 0;
-
-    // initialize random seeds for snake threads
-    for(int i = 0; i < gamedata->snakeCount; i++)
-        gamedata->snakes[i].seed = rand();
-
-    // initialize command line arguments
-    readArgs(argc, argv, gamedata);
-
-    // check if an old save file exists // DO I NEED TO DO IT HERE OR IN CREATE MAP? 
-    if (gamedata->saveFile)
-    {        
-        struct stat* saveStat;
-        if ( (saveStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc");
-        saveExists = 1 + lstat(gamedata->pathf, saveStat);
-        free(saveStat);
-    }
-
-    if (DEBUGINIT) printf("[INITIALIZATION] Save file exists: %d\n", saveExists);
+    // initialize mutex
+    pthread_mutex_t* mxUpdateMap;
+    mxUpdateMap = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t)); // free'd in exit_sequence()
+    if (pthread_mutex_init(mxUpdateMap, NULL)) ERR("Couldn't initialize mutex!");
     
-    if (saveExists) initSavedGame(gamedata); 
-    else initNewGame(gamedata);
-
+    sethandler(sig_handler,SIGQUIT);
+    
     /*
     
     // initialize signal mask
     sigset_t* mask;
     if ( (mask = (sigset_t*) malloc(sizeof(sigset_t))) == NULL ) ERR ("malloc"); // free'd in exit_sequence()
     sigemptyset(mask);
+    sigaddset(mask, SIGQUIT);  // stop real time map display
     sigaddset(mask, SIGUSR1);  // "user initiated index" signal for indexer thread
                                // "start-up indexing completed" signal for main thread
     sigaddset(mask, SIGUSR2);  // "exit" signal for indexer thread
     sigaddset(mask, SIGALRM);  // "periodic index" signal for indexer thread
     sigaddset(mask, SIGPIPE);  // to ignore the EPIPE error in pclose()
     pthread_sigmask(SIG_BLOCK, mask, NULL);
-
-    // initialize mutex
-    pthread_mutex_t* mxIndexer;
-    mxIndexer = (pthread_mutex_t*) malloc(sizeof(pthread_mutex_t)); // free'd in exit_sequence()
-    if (pthread_mutex_init(mxIndexer, NULL)) ERR("Couldn't initialize mutex!");
     */
+    
+    
+    // initialize gameData 
+    gameData->saveFile = 1;
+    gameData->mapDim.x = DEFAULT_X;
+    gameData->mapDim.y = DEFAULT_Y;
+    gameData->snakeCount = 0;    
+    gameData->foods = NULL;    
+    gameData->snakes = NULL;
+    gameData->pmxMap = mxUpdateMap;
+    //gameData->pMask = mask;
+    int saveExists = 0;
+
+    // initialize command line arguments
+    readArgs(argc, argv, gameData);
+
+    // initialize random seeds for snake threads
+    for(int i = 0; i < gameData->snakeCount; i++)
+        gameData->snakes[i].seed = rand();
+
+    // check if an old save file exists // DO I NEED TO DO IT HERE OR IN CREATE MAP? 
+    if (gameData->saveFile)
+    {        
+        struct stat* saveStat;
+        if ( (saveStat = (struct stat*) malloc(sizeof(struct stat))) == NULL ) ERR ("malloc");
+        saveExists = 1 + lstat(gameData->pathf, saveStat);
+        free(saveStat);
+    }
+
+    if (DEBUGINIT) printf("[INITIALIZATION] Save file exists: %d\n", saveExists);
+    
+    if (saveExists) initSavedGame(gameData); 
+    else initNewGame(gameData);
 
     printf("\nStarting **tsnake**.\n");
 }
@@ -405,14 +604,32 @@ void initialization(int argc, char** argv, gamedata_t* gamedata)
 int main(int argc, char** argv)
 {	
     srand(time(NULL));
-    struct gamedata_t gamedata;
+    struct gamedata_t gameData;
 
     // INITIALIZATION
-    initialization(argc, argv, &gamedata);
+    initialization(argc, argv, &gameData);
 
     if (DEBUGMAIN) 
-        for(int i = 0; i < gamedata.snakeCount; i++)
-            printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gamedata.snakes[i].c, gamedata.snakes[i].s);
+        for(int i = 0; i < gameData.snakeCount; i++)
+            printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gameData.snakes[i].c, gameData.snakes[i].s);
+    
+    
+
+    //printMap(&gameData, 1);
+    
+    
+    
+    while(1) 
+    {
+        //system("clear");
+        printMap(&gameData, 1);
+        msleep(300);
+    }
+
+    
+    
+    
+    
     
     /*
     // STARTUP INDEXING
@@ -435,6 +652,8 @@ int main(int argc, char** argv)
     exitSequence(&threadArgs);
     */
 
+    
+    msleep(200);
     return EXIT_SUCCESS;
 }
 
