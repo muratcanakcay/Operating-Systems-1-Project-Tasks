@@ -321,8 +321,6 @@ void selectDirection(gamedata_t* gameData, int snakeNo)
     xy_t snakePos = gameData->snakes[snakeNo].head->pos;
     xy_t foodPos = gameData->snakes[snakeNo].target;
     
-    
-    
     if ( (abs(snakePos.x - foodPos.x) == 1 && (snakePos.y == foodPos.y)) || 
          (abs(snakePos.y - foodPos.y) == 1 && (snakePos.x == foodPos.x)) )  // snake is next to the food
     {
@@ -336,18 +334,16 @@ void selectDirection(gamedata_t* gameData, int snakeNo)
     {
         while( (emptyTiles & direction) == 0 )
         {
-            direction = (int)pow(2, rand_r(&gameData->snakes[snakeNo].seed) % 4);
+            direction = 1 << (rand_r(&gameData->snakes[snakeNo].seed) % 4);
         }
     }
-    else                                    // foodDirection is available go towards food
+    else                                        // foodDirection is available go towards food
     {
         while( (emptyTiles & foodDirection & direction) == 0 ) 
         {
-            direction = (int)pow(2, rand_r(&gameData->snakes[snakeNo].seed) % 4);
+            direction = 1 << (rand_r(&gameData->snakes[snakeNo].seed) % 4);
         }
     }
-
-    
     
     if (DEBUGMOVESNAKE) printf("[SELECTDIRECTION] Direction: %d\n", direction);
     gameData->snakes[snakeNo].direction = direction;
@@ -384,18 +380,18 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
     int d = gameData->snakes[snakeNo].direction;    
     switch(d)
     {
-            case 1: // up
-                gameData->snakes[snakeNo].head->pos.y--;
-                break;
-            case 2: // right
-                gameData->snakes[snakeNo].head->pos.x++;
-                break;
-            case 4: // down
-                gameData->snakes[snakeNo].head->pos.y++;
-                break;
-            case 8: // left
-                gameData->snakes[snakeNo].head->pos.x--;
-                break;
+        case 1: // up
+            gameData->snakes[snakeNo].head->pos.y--;
+            break;
+        case 2: // right
+            gameData->snakes[snakeNo].head->pos.x++;
+            break;
+        case 4: // down
+            gameData->snakes[snakeNo].head->pos.y++;
+            break;
+        case 8: // left
+            gameData->snakes[snakeNo].head->pos.x--;
+            break;
     }
     
     // print new head position
