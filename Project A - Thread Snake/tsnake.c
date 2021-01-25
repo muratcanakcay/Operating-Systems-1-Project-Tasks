@@ -33,7 +33,7 @@
 #define MAX_SPEED 1000
 #define DEFAULT_X 20
 #define DEFAULT_Y 20
-#define DELAY 200
+#define DELAY 50
 
 #define ERR(source) (perror(source),\
 		     fprintf(stderr,"%s:%d\n",__FILE__,__LINE__),\
@@ -363,6 +363,7 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
     xy_t target = gameData->snakes[snakeNo].target;
     if (DEBUGMOVESNAKE) printf("[MOVESNAKE] Target: (%d, %d)\n", target.x, target.y);
     int l = gameData->snakes[snakeNo].l;
+    char c = gameData->snakes[snakeNo].c;
     bool grow_flag = gameData->snakes[snakeNo].grow_flag;
     segment* oldTail = gameData->snakes[snakeNo].tail;
     
@@ -376,44 +377,43 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
     oldHead->previous = newHead;
     gameData->snakes[snakeNo].head = newHead;
     
-    // new head position (MUTEX)
+    // new head position
     int d = gameData->snakes[snakeNo].direction;    
     switch(d)
     {
         case 1: // up
-            gameData->snakes[snakeNo].head->pos.y--;
+            newHead->pos.y--;
             break;
         case 2: // right
-            gameData->snakes[snakeNo].head->pos.x++;
+            newHead->pos.x++;
             break;
         case 4: // down
-            gameData->snakes[snakeNo].head->pos.y++;
+            newHead->pos.y++;
             break;
         case 8: // left
-            gameData->snakes[snakeNo].head->pos.x--;
+            newHead->pos.x--;
             break;
     }
     
-    // print new head position
-    segment* head = gameData->snakes[snakeNo].head;
-    gameData->map[head->pos.y][head->pos.x] = gameData->snakes[snakeNo].c;        
+    // print new head 
+    gameData->map[newHead->pos.y][newHead->pos.x] = c;        
     
-    if (grow_flag)  // grow the snake (and keep the oldTail)
+    if (grow_flag)  // grow the snake (keep the oldTail)
     {
-        gameData->map[head->next->pos.y][head->next->pos.x] = tolower(gameData->snakes[snakeNo].c);
+        gameData->map[newHead->next->pos.y][newHead->next->pos.x] = tolower(c);
         gameData->snakes[snakeNo].l++;
     }
     else            // just move the snake (remove the oldTail)
     {
         if (l == 1)  // if snake length is 1
         {
-            gameData->snakes[snakeNo].tail = gameData->snakes[snakeNo].head;            
+            gameData->snakes[snakeNo].tail = newHead;            
         }
         else        // if snake length is longer than 1
         {
             gameData->snakes[snakeNo].tail = oldTail->previous;
             gameData->snakes[snakeNo].tail->next = NULL;
-            gameData->map[head->next->pos.y][head->next->pos.x] = tolower(gameData->snakes[snakeNo].c);
+            gameData->map[newHead->next->pos.y][newHead->next->pos.x] = tolower(c);
         }
 
         gameData->map[oldTail->pos.y][oldTail->pos.x] = ' ';
@@ -422,18 +422,15 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
     
     // check if food is eaten
     gameData->snakes[snakeNo].grow_flag = 0;
-    if ( gameData->snakes[snakeNo].head->pos.x == gameData->snakes[snakeNo].target.x && gameData->snakes[snakeNo].head->pos.y == gameData->snakes[snakeNo].target.y )
+    if ( newHead->pos.x == target.x && newHead->pos.y == target.y )
     {        
-        gameData->snakes[snakeNo].grow_flag = true;
+        gameData->snakes[snakeNo].grow_flag = 1;
         int foodNo = getFoodNo(gameData, snakeNo);
         placeFood(gameData, foodNo);
         
         // TODO: signal to all snakes that food is eaten so they choose new target if necessary!
         gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
     }
-
-    //msleep(500);
-
 }
 
 void checkFood(gamedata_t* gameData, int snakeNo) // if targeted food is gone select new target
@@ -459,11 +456,15 @@ void* snakeThread(void* voidData)
     // select direction & move snake
     while(1)
     {
-        msleep(DELAY);
+        msleep(gameData->snakes[snakeNo].s);
+
+        // thread safe region
         pthread_mutex_lock(gameData->pmxMap);
-        checkFood(gameData, snakeNo);
-        selectDirection(gameData, snakeNo);
-        moveSnake(gameData, snakeNo);
+        {    
+            checkFood(gameData, snakeNo);
+            selectDirection(gameData, snakeNo);
+            moveSnake(gameData, snakeNo);
+        }
         pthread_mutex_unlock(gameData->pmxMap);
     }
     
