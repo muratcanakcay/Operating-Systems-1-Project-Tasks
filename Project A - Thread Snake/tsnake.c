@@ -423,13 +423,10 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
     // check if food is eaten
     gameData->snakes[snakeNo].grow_flag = 0;
     if ( newHead->pos.x == target.x && newHead->pos.y == target.y )
-    {        
+    {
         gameData->snakes[snakeNo].grow_flag = 1;
         int foodNo = getFoodNo(gameData, snakeNo);
         placeFood(gameData, foodNo);
-        
-        // TODO: signal to all snakes that food is eaten so they choose new target if necessary!
-        gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
     }
 }
 
@@ -447,11 +444,11 @@ void* snakeThread(void* voidData)
     int snakeNo;
     if ( (snakeNo = getSnakeNo(gameData)) == -1) ERR("getSnakeNo()");
 
-    if (DEBUGSNAKEWORK) printf("Created snake thread for snake #%d with TID = %ld\n", snakeNo, gameData->snakes[snakeNo].tid); 
+    if (DEBUGSNAKEWORK) printf("Created snake thread for snake #%d with TID = %ld\n", snakeNo, gameData->snakes[snakeNo].tid);
     
     // select food to target
     gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
-    if (DEBUGSNAKEWORK) printf("Selected food at (%d, %d) as target\n", gameData->snakes[snakeNo].target.x, gameData->snakes[snakeNo].target.y); 
+    if (DEBUGSNAKEWORK) printf("Selected food at (%d, %d) as target\n", gameData->snakes[snakeNo].target.x, gameData->snakes[snakeNo].target.y);
     
     // select direction & move snake
     while(1)
@@ -460,7 +457,7 @@ void* snakeThread(void* voidData)
 
         // thread safe region
         pthread_mutex_lock(gameData->pmxMap);
-        {    
+        {
             checkFood(gameData, snakeNo);
             selectDirection(gameData, snakeNo);
             moveSnake(gameData, snakeNo);
@@ -490,7 +487,7 @@ void spawnSnake(gamedata_t* gameData, int snakeNo)
         pthread_mutex_lock(gameData->pmxMap);
         if (gameData->map[r][c] == ' ')
         {
-            gameData->map[r][c] = gameData->snakes[snakeNo].c;            
+            gameData->map[r][c] = gameData->snakes[snakeNo].c;
             placed = 1;
         }
         pthread_mutex_unlock(gameData->pmxMap);
@@ -506,7 +503,7 @@ void spawnSnake(gamedata_t* gameData, int snakeNo)
     if (DEBUGSPAWNSNAKE) printf("Snake #%d TID = %ld spawned.\n", snakeNo, gameData->snakes[snakeNo].tid);
 
     if (DEBUGSPAWNSNAKE) printf("[END SPAWNSNAKE]\n");
-    return;    
+    return;
 }
 
 void printMap(gamedata_t* gameData, int fd) // writes the map to the file descriptor fd ( fd = 1 for stdout)
@@ -648,15 +645,12 @@ int main(int argc, char** argv)
     if (pthread_mutex_init(&mxUpdateMap, NULL)) ERR("Couldn't initialize mutex!");
     gameData.pmxMap = &mxUpdateMap;
     
-    
-    
     // INITIALIZATION
     initialization(argc, argv, &gameData);
 
     if (DEBUGMAIN) 
         for(int i = 0; i < gameData.snakeCount; i++)
             printf("[MAIN] Snake no: %d char: %c speed: %d\n", i+1, gameData.snakes[i].c, gameData.snakes[i].s);
-    
 
     while(1) 
     {
@@ -665,30 +659,14 @@ int main(int argc, char** argv)
         msleep(DELAY);
     }
 
-    
-    /*
-    // STARTUP INDEXING
-    startupIndexing(&threadArgs);
-    
-    // if a prevous index file did not exist, wait for it to be created
-    // wait for confirmation from indexer thread via SIGUSR1
-    if (threadArgs.newIndex != 0) 
-        while (sigNo != SIGUSR1) 
-            sigwait(threadArgs.pMask, &sigNo);
-    
-    // at this point index file exists and if periodic
-    // indexing is set indexer thread is waiting for signals
-    // and carrying out periodic indexing as required
-    
+    /*     TO BE IMPLEMENTED:
     // USER INPUT
-    getUserInput(&threadArgs); // start accepting user commands
+    getUserInput(&gameData); // start accepting user commands
     
     // EXIT SEQUENCE
-    exitSequence(&threadArgs);
+    exitSequence(&gameData);
     */
 
-    
-    msleep(200);
     return EXIT_SUCCESS;
 }
 
