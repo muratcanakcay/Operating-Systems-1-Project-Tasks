@@ -95,7 +95,8 @@ int getSnakeNo(gamedata_t* gameData);
 
 //-----------
 
-void usage(){
+void usage()
+{
     fprintf(stderr,"\nUSAGE : tsnake [-x xdim=%d] [-y ydim=%d] [-f file=$SNAKEFILE] c1:s1 [c2:s2 ...]\n\n", DEFAULT_X, DEFAULT_Y);
     fprintf(stderr,"x : x dimension of the map. - Default value is %d\n\n", DEFAULT_X);
     fprintf(stderr,"y : y dimension of the map. - Default value is %d\n\n", DEFAULT_X);
@@ -274,14 +275,18 @@ void initNewGame(gamedata_t* gameData)
 int getSnakeNo(gamedata_t* gameData)
 {    
     pthread_t tid = pthread_self();
-    for (int i = 0; i < gameData->snakeCount ; i++)
-        if (pthread_equal(tid, gameData->snakes[i].tid)) return i;
+
+    for (int snakeNo = 0; snakeNo < gameData->snakeCount ; snakeNo++)
+        if (pthread_equal(tid, gameData->snakes[snakeNo].tid))
+            return snakeNo;
+    
     return -1;
 }
 
 xy_t selectTarget(gamedata_t* gameData, int snakeNo)
 {
-    return gameData->foods[rand_r(&gameData->snakes[snakeNo].seed) % gameData->snakeCount];    
+    int randFoodNo = rand_r(&gameData->snakes[snakeNo].seed) % gameData->snakeCount;
+    return gameData->foods[randFoodNo];
 }
 
 int getEmptyTiles(gamedata_t* gameData, int snakeNo)
@@ -352,8 +357,13 @@ void selectDirection(gamedata_t* gameData, int snakeNo)
 int getFoodNo(gamedata_t* gameData, int snakeNo) // returns foodNo of the food targeted by snakeNo
 {
     xy_t target = gameData->snakes[snakeNo].target;
-    for (int i = 0; i < gameData->snakeCount; i++)
-        if (target.x == gameData->foods[i].x && target.y == gameData->foods[i].y) return i;
+    for (int foodNo = 0; foodNo < gameData->snakeCount; foodNo++)
+    {
+        if (target.x == gameData->foods[foodNo].x && target.y == gameData->foods[foodNo].y) 
+        {
+            return foodNo;
+        }
+    }
 
     return -1;
 }
@@ -392,7 +402,6 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
             break;
         case 8: // left
             newHead->pos.x--;
-            break;
     }
     
     // print new head 
@@ -433,7 +442,10 @@ void moveSnake(gamedata_t* gameData, int snakeNo)
 void checkFood(gamedata_t* gameData, int snakeNo) // if targeted food is gone select new target
 {
     xy_t target = gameData->snakes[snakeNo].target;
-    if (gameData->map[target.y][target.x] != 'o') gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
+    if (gameData->map[target.y][target.x] != 'o')
+    {
+        gameData->snakes[snakeNo].target = selectTarget(gameData, snakeNo);
+    }
 }
 
 void* snakeThread(void* voidData)
@@ -493,9 +505,9 @@ void spawnSnake(gamedata_t* gameData, int snakeNo)
         pthread_mutex_unlock(gameData->pmxMap);
     }
 
-    gameData->snakes[snakeNo].head->pos.x = c;
-    gameData->snakes[snakeNo].head->pos.y = r;
-    gameData->snakes[snakeNo].tail = gameData->snakes[snakeNo].head;
+    head->pos.x = c;
+    head->pos.y = r;
+    gameData->snakes[snakeNo].tail = head;
     gameData->snakes[snakeNo].l = 1;
     
     if (pthread_create(&gameData->snakes[snakeNo].tid, NULL, snakeThread, gameData)) ERR("pthread_create");
@@ -533,9 +545,6 @@ void placeFood(gamedata_t* gameData, int foodNo)
     if (DEBUGPLACEFOOD) printf("[PLACEFOOD]\n");
     
     int r, c, placed = 0;   
-    
-    // xy_t* newFood = (xy_t*) calloc(1, sizeof(xy_t));
-    // gameData->foods[foodNo] = *newFood;
     
     while (!placed)
     {
@@ -598,7 +607,6 @@ void initialization(int argc, char** argv, gamedata_t* gameData)
     sigaddset(mask, SIGPIPE);  // to ignore the EPIPE error in pclose()
     pthread_sigmask(SIG_BLOCK, mask, NULL);
     */
-    
     
     // initialize gameData 
     gameData->saveFile = 1;
@@ -669,4 +677,3 @@ int main(int argc, char** argv)
 
     return EXIT_SUCCESS;
 }
-
