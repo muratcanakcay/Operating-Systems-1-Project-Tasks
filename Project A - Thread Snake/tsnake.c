@@ -541,6 +541,8 @@ void printMap(gamedata_t* gameData, int fd) // writes the map to the file descri
 
 void realMap(gamedata_t* gameData) // uses ncurses.h to display the map in real time
 {
+    int snakeNo;
+    
     // create top and bottom border
     char bor[gameData->mapDim.c + 3];
     bor[0] = bor[gameData->mapDim.c + 1] = 'X';
@@ -550,23 +552,40 @@ void realMap(gamedata_t* gameData) // uses ncurses.h to display the map in real 
 
     //SCREEN* screen;
     
-    setlocale(LC_ALL, "");
+    setlocale(LC_ALL, "");    
     //initscr();
     SCREEN* realTime = newterm(NULL, stdout, stdin);
     cbreak();
     SCREEN* gui = set_term(realTime);
+    start_color();
+    init_pair(1, COLOR_CYAN, COLOR_BLACK);
+    init_pair(2, COLOR_YELLOW, COLOR_BLACK);
+    init_pair(3, COLOR_RED, COLOR_BLACK);
+    init_pair(4, COLOR_GREEN, COLOR_BLACK);
+    init_pair(5, COLOR_WHITE, COLOR_BLACK);
     
     // print map
     while(1)
     {   
         move(0,0);
     
+        attron(A_BOLD);
         printw("%s", bor);
         for(int r = 0; r < gameData->mapDim.r; r++)
         {
             addch('|');
             for(int c = 0; c < gameData->mapDim.c; c++)
+            {
+                
+                char ch = gameData->map[r][c];
+                for(snakeNo = 0; snakeNo < gameData->snakeCount; snakeNo++)
+                    if(ch == gameData->snakes[snakeNo].c || toupper(ch) == gameData->snakes[snakeNo].c)
+                        attron(COLOR_PAIR(1 + (snakeNo % 5)));
+                
                 addch(gameData->map[r][c]);
+                attroff(COLOR_PAIR(1 + (snakeNo % 5)));
+            }
+            
             addch('|');
             addch('\n');
         }
